@@ -18,11 +18,12 @@ namespace {
 constexpr wchar_t kRegistryPath[] = L"Software\\MoviePlayer";
 constexpr wchar_t kRegistryValue[] = L"Language";
 
-constexpr std::array<LanguageInfo, 11> kLanguages = {{
+constexpr std::array<LanguageInfo, 12> kLanguages = {{
     {L"en", "language.english"},
     {L"ja", "language.japanese"},
     {L"ko", "language.korean"},
     {L"fr", "language.french"},
+    {L"de", "language.german"},
     {L"zh-CN", "language.chinese_simplified"},
     {L"zh-TW", "language.chinese_traditional"},
     {L"es", "language.spanish"},

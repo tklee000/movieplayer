@@ -9,7 +9,7 @@ if (-not $LanguageDirectory) {
 }
 $LanguageDirectory = (Resolve-Path $LanguageDirectory).Path
 $ExpectedFiles = @(
-    'en.lang', 'ja.lang', 'ko.lang', 'fr.lang', 'zh-CN.lang', 'zh-TW.lang',
+    'en.lang', 'ja.lang', 'ko.lang', 'fr.lang', 'de.lang', 'zh-CN.lang', 'zh-TW.lang',
     'es.lang', 'pt.lang', 'hi.lang', 'id.lang', 'ar.lang'
 )
 

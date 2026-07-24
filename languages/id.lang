@@ -1,10 +1,11 @@
-# MoviePlayer Indonesian UI resources (UTF-8)
+# MoviePlayer Sumber Daya UI Bahasa Indonesia (UTF-8)
 # Format: key=value. Supported escapes: \n, \r, \t, and \\.
 
 language.english=English
 language.japanese=日本語
 language.korean=한국어
 language.french=Français
+language.german=German (Deutsch)
 language.chinese_simplified=简体中文
 language.chinese_traditional=繁體中文
 language.spanish=Español
@@ -12,7 +13,6 @@ language.portuguese=Português
 language.hindi=हिन्दी
 language.indonesian=Bahasa Indonesia
 language.arabic=العربية
-
 menu.file=&Berkas
 menu.file.open=&Buka...\tCtrl+O
 menu.file.close=&Tutup
@@ -43,12 +43,11 @@ menu.subtitle.whisper_auto=Buat subtitle AI...
 menu.subtitle.whisper_cancel=Batalkan pembuatan subtitle otomatis
 menu.subtitle.tracks=Trek subtitle
 menu.subtitle.off=Nonaktifkan subtitle
-menu.track.none=Tidak ada trek yang didukung
-menu.track.default=Bawaan
 menu.language=&Bahasa
 menu.help=B&antuan
 menu.help.about=Tentang MoviePlayer
-
+menu.track.default=Bawaan
+menu.track.none=Tidak ada trek yang didukung
 button.open=Buka
 button.play=Putar
 button.pause=Jeda
@@ -56,25 +55,34 @@ button.stop=Berhenti
 button.mute=Bisukan
 button.unmute=Aktifkan suara
 button.fullscreen=Layar penuh
-context.exit_fullscreen=Keluar dari layar penuh
-
+button.exit_fullscreen=Exit Fullscreen
 status.idle=Buka atau seret dan lepas berkas MP4, MKV, atau video lainnya.
 status.opening=Menganalisis berkas dan membuka dekoder...
-status.open_failed=Berkas tidak dapat dibuka.
+status.playing=Playing
+status.paused=Paused
+status.stopped=Stopped
+status.audio_track=Audio track: {name}
+status.subtitle_track=Subtitle track: {name}
+status.subtitle_external=External subtitle: {file}
+status.subtitle_none=Subtitles hidden
+status.volume=Volume: {level}%
+status.muted=Muted
+status.unmuted=Unmuted
+status.speed=Speed: {speed}
+status.loop_on=Loop enabled
+status.loop_off=Loop disabled
+status.auto_next_on=Auto-play next enabled
+status.auto_next_off=Auto-play next disabled
+status.always_on_top_on=Always on top enabled
+status.always_on_top_off=Always on top disabled
+status.rtx_on=NVIDIA RTX Video AI upscaling enabled
+status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=Subtitle
-status.subtitle_showing=ditampilkan
-status.canceled=Dibatalkan
-status.ai_installing=Menginstal mesin subtitle AI...
-status.ai_install_failed=Instalasi mesin subtitle AI gagal
-status.ai_install_complete=Instalasi mesin subtitle AI selesai
-status.whisper_worker_starting=Memulai proses Whisper
-status.whisper_preparing_auto=Menyiapkan deteksi otomatis Whisper → subtitle bahasa Indonesia...
-status.whisper_canceling=Membatalkan pembuatan subtitle bahasa Indonesia otomatis...
+status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=Membuat subtitle bahasa Indonesia otomatis {progress}%
 status.whisper_canceled=Pembuatan subtitle bahasa Indonesia otomatis dibatalkan
 status.whisper_failed=Pembuatan subtitle bahasa Indonesia otomatis gagal
 status.whisper_complete=Pembuatan subtitle bahasa Indonesia otomatis selesai
-
 title.file_association_error=Kesalahan asosiasi berkas
 title.subtitles=Subtitle
 title.subtitle_error=Kesalahan subtitle
@@ -89,11 +97,9 @@ title.whisper_subtitle=Subtitle bahasa Indonesia otomatis dari Whisper
 title.whisper_run_error=Kesalahan saat memulai Whisper
 title.whisper_generation_error=Kesalahan pembuatan subtitle Whisper
 title.rtx_video_upscaling=Peningkatan skala AI RTX Video
-
 dialog.video_files=Berkas video (*.mp4;*.mkv;*.avi)
 dialog.subtitle_files=Berkas subtitle (*.srt;*.ass;*.ssa;*.smi;*.vtt)
 dialog.all_files=Semua berkas (*.*)
-
 message.open_video_first=Buka berkas video terlebih dahulu.
 message.subtitle_not_found=Tidak ditemukan subtitle SRT, ASS, SSA, atau SMI yang cocok di samping video.
 message.rtx_video_unavailable=RTX Video Super Resolution tidak tersedia pada sistem ini.\n\n{error}
@@ -106,10 +112,8 @@ message.whisper_regenerate_auto=[Tidak] Buat ulang menggunakan deteksi bahasa ot
 message.whisper_existing=Subtitle bahasa Indonesia yang dibuat Whisper sudah ada.\n\n[Ya] Muat subtitle yang ada sekarang.\n{regenerate}
 message.whisper_mode_auto=Bahasa suara akan dideteksi secara otomatis.
 message.whisper_generate=Whisper large-v3-turbo akan mengenali suara dan membuat subtitle bahasa Indonesia. Transkrip dalam bahasa yang terdeteksi juga disimpan sebagai SRT terpisah; terjemahan dilewati jika suara sudah berbahasa Indonesia.\n\n{mode}\n\nPemrosesan seluruh video dapat memerlukan waktu dan menggunakan GPU secara intensif. Lanjutkan?
-
 association.media_name=Video MoviePlayer
 association.description=Pemutar video MP4/HEVC/AAC native
-
 component.ai_runtime_or_model=runtime atau model subtitle AI
 component.whisper_worker=worker subtitle AI native
 component.transformers=runtime terjemahan Transformers
@@ -122,7 +126,6 @@ component.m2m100_config=konfigurasi model M2M100
 component.m2m100_tokenizer=tokenizer M2M100
 component.m2m100_vocabulary=kosakata M2M100
 component.incomplete_file={component} (berkas tidak lengkap)
-
 error.language_load=Sumber daya bahasa yang dipilih tidak dapat dimuat.\n\n{error}
 error.window_create=Jendela MoviePlayer tidak dapat dibuat.
 error.renderer_init=Perender D3D11 tidak dapat diinisialisasi.\n\n{error}
@@ -147,7 +150,7 @@ error.media_open=Berkas media tidak dapat dibuka: {error}
 error.stream_info=Informasi stream media tidak dapat dibaca: {error}
 error.no_video_stream=Tidak ditemukan stream video yang dapat diputar.
 error.audio_output_reset=Keluaran audio tidak dapat diatur ulang: {error}
-error.audio_output_submit=Audio output submission failed: {error}
+error.audio_output_submit=Pengiriman output audio gagal: {error}
 error.playback_thread=Thread pemutaran tidak dapat dibuat.
 error.packet_memory=Memori untuk paket tidak dapat dialokasikan.
 error.media_read=Kesalahan pembacaan media: {error}

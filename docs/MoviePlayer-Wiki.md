@@ -33,7 +33,7 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
 | Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
-| UI languages | English, Japanese, Korean, French, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
+| UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 
 These are focused playback implementations for ordinary consumer files, not
 complete implementations of every profile, level, chroma format, bit depth,

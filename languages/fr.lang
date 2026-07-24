@@ -1,9 +1,11 @@
-# Ressources d'interface française de MoviePlayer (UTF-8)
+# MoviePlayer Ressources UI Français (UTF-8)
+# Format: key=value. Supported escapes: \n, \r, \t, and \\.
 
 language.english=English
 language.japanese=日本語
 language.korean=한국어
 language.french=Français
+language.german=German (Deutsch)
 language.chinese_simplified=简体中文
 language.chinese_traditional=繁體中文
 language.spanish=Español
@@ -11,7 +13,6 @@ language.portuguese=Português
 language.hindi=हिन्दी
 language.indonesian=Bahasa Indonesia
 language.arabic=العربية
-
 menu.file=&Fichier
 menu.file.open=&Ouvrir...\tCtrl+O
 menu.file.close=&Fermer
@@ -42,12 +43,11 @@ menu.subtitle.whisper_auto=Générer des sous-titres IA...
 menu.subtitle.whisper_cancel=Annuler la génération automatique
 menu.subtitle.tracks=Pistes de sous-titres
 menu.subtitle.off=Désactiver les sous-titres
-menu.track.none=Aucune piste prise en charge
-menu.track.default=Par défaut
 menu.language=Lan&gue
 menu.help=&Aide
 menu.help.about=À propos de MoviePlayer
-
+menu.track.default=Par défaut
+menu.track.none=Aucune piste prise en charge
 button.open=Ouvrir
 button.play=Lecture
 button.pause=Pause
@@ -55,25 +55,34 @@ button.stop=Arrêter
 button.mute=Muet
 button.unmute=Rétablir le son
 button.fullscreen=Plein écran
-context.exit_fullscreen=Quitter le plein écran
-
+button.exit_fullscreen=Exit Fullscreen
 status.idle=Ouvrez ou déposez un fichier vidéo MP4, MKV ou d'un autre format.
 status.opening=Analyse du fichier et ouverture du décodeur...
-status.open_failed=Impossible d'ouvrir le fichier.
+status.playing=Playing
+status.paused=Paused
+status.stopped=Stopped
+status.audio_track=Audio track: {name}
+status.subtitle_track=Subtitle track: {name}
+status.subtitle_external=External subtitle: {file}
+status.subtitle_none=Subtitles hidden
+status.volume=Volume: {level}%
+status.muted=Muted
+status.unmuted=Unmuted
+status.speed=Speed: {speed}
+status.loop_on=Loop enabled
+status.loop_off=Loop disabled
+status.auto_next_on=Auto-play next enabled
+status.auto_next_off=Auto-play next disabled
+status.always_on_top_on=Always on top enabled
+status.always_on_top_off=Always on top disabled
+status.rtx_on=NVIDIA RTX Video AI upscaling enabled
+status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=Sous-titre
-status.subtitle_showing=affiché
-status.canceled=Annulé
-status.ai_installing=Installation du moteur de sous-titres IA...
-status.ai_install_failed=Échec de l'installation du moteur de sous-titres IA
-status.ai_install_complete=Installation du moteur de sous-titres IA terminée
-status.whisper_worker_starting=Démarrage du worker Whisper
-status.whisper_preparing_auto=Préparation de Whisper auto → sous-titres français...
-status.whisper_canceling=Annulation de la génération des sous-titres français...
+status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=Génération des sous-titres français {progress} %
 status.whisper_canceled=Génération des sous-titres français annulée
 status.whisper_failed=Échec de la génération des sous-titres français
 status.whisper_complete=Génération des sous-titres français terminée
-
 title.file_association_error=Erreur d'association de fichiers
 title.subtitles=Sous-titres
 title.subtitle_error=Erreur de sous-titres
@@ -88,11 +97,9 @@ title.whisper_subtitle=Sous-titres français automatiques Whisper
 title.whisper_run_error=Erreur de lancement de Whisper
 title.whisper_generation_error=Erreur de génération des sous-titres Whisper
 title.rtx_video_upscaling=Mise à l’échelle IA RTX Video
-
 dialog.video_files=Fichiers vidéo (*.mp4;*.mkv;*.avi)
 dialog.subtitle_files=Fichiers de sous-titres (*.srt;*.ass;*.ssa;*.smi;*.vtt)
 dialog.all_files=Tous les fichiers (*.*)
-
 message.open_video_first=Ouvrez d'abord un fichier vidéo.
 message.subtitle_not_found=Aucun sous-titre SRT, ASS, SSA ou SMI correspondant n'a été trouvé à côté de la vidéo.
 message.rtx_video_unavailable=RTX Video Super Resolution n’est pas disponible sur ce système.\n\n{error}
@@ -105,10 +112,8 @@ message.whisper_regenerate_auto=[Non] Régénérer avec détection automatique d
 message.whisper_existing=Des sous-titres français Whisper existent déjà.\n\n[Oui] Charger les sous-titres existants.\n{regenerate}
 message.whisper_mode_auto=La langue vocale sera détectée automatiquement.
 message.whisper_generate=Whisper large-v3-turbo reconnaîtra la voix et créera des sous-titres français. Le SRT dans la langue détectée est aussi conservé séparément ; aucune traduction n'est effectuée si la voix est déjà en français.\n\n{mode}\n\nLe traitement de toute la vidéo peut prendre du temps et solliciter fortement le GPU. Continuer ?
-
 association.media_name=Vidéo MoviePlayer
 association.description=Lecteur vidéo natif MP4/HEVC/AAC
-
 component.ai_runtime_or_model=runtime ou modèle de sous-titres IA
 component.whisper_worker=worker natif de sous-titres IA
 component.transformers=runtime de traduction Transformers
@@ -121,7 +126,6 @@ component.m2m100_config=configuration du modèle M2M100
 component.m2m100_tokenizer=tokenizer M2M100
 component.m2m100_vocabulary=vocabulaire M2M100
 component.incomplete_file={component} (fichier incomplet)
-
 error.language_load=Impossible de charger la ressource de langue sélectionnée.\n\n{error}
 error.window_create=Impossible de créer la fenêtre MoviePlayer.
 error.renderer_init=Impossible d'initialiser le renderer D3D11.\n\n{error}
@@ -146,7 +150,7 @@ error.media_open=Impossible d'ouvrir le fichier multimédia : {error}
 error.stream_info=Impossible de lire les informations des flux : {error}
 error.no_video_stream=Aucun flux vidéo lisible n'a été trouvé.
 error.audio_output_reset=Impossible de réinitialiser la sortie audio : {error}
-error.audio_output_submit=Audio output submission failed: {error}
+error.audio_output_submit=Échec de l'envoi de la sortie audio : {error}
 error.playback_thread=Impossible de créer les threads de lecture.
 error.packet_memory=Impossible d'allouer la mémoire du paquet.
 error.media_read=Erreur de lecture du média : {error}

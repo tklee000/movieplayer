@@ -124,6 +124,7 @@ enum CommandId : int {
     ID_LANGUAGE_JA,
     ID_LANGUAGE_KO,
     ID_LANGUAGE_FR,
+    ID_LANGUAGE_DE,
     ID_LANGUAGE_ZH_CN,
     ID_LANGUAGE_ZH_TW,
     ID_LANGUAGE_ES,
@@ -1093,6 +1094,7 @@ private:
         append(language, MF_STRING, ID_LANGUAGE_JA, "language.japanese");
         append(language, MF_STRING, ID_LANGUAGE_KO, "language.korean");
         append(language, MF_STRING, ID_LANGUAGE_FR, "language.french");
+        append(language, MF_STRING, ID_LANGUAGE_DE, "language.german");
         append(language, MF_STRING, ID_LANGUAGE_ZH_CN,
                "language.chinese_simplified");
         append(language, MF_STRING, ID_LANGUAGE_ZH_TW,
@@ -1796,6 +1798,7 @@ private:
         if (_wcsicmp(code.c_str(), L"ja") == 0) return ID_LANGUAGE_JA;
         if (_wcsicmp(code.c_str(), L"ko") == 0) return ID_LANGUAGE_KO;
         if (_wcsicmp(code.c_str(), L"fr") == 0) return ID_LANGUAGE_FR;
+        if (_wcsicmp(code.c_str(), L"de") == 0) return ID_LANGUAGE_DE;
         if (_wcsicmp(code.c_str(), L"zh-CN") == 0) return ID_LANGUAGE_ZH_CN;
         if (_wcsicmp(code.c_str(), L"zh-TW") == 0) return ID_LANGUAGE_ZH_TW;
         if (_wcsicmp(code.c_str(), L"es") == 0) return ID_LANGUAGE_ES;
@@ -2070,6 +2073,9 @@ private:
             break;
         case ID_LANGUAGE_FR:
             SetUiLanguage(L"fr");
+            break;
+        case ID_LANGUAGE_DE:
+            SetUiLanguage(L"de");
             break;
         case ID_LANGUAGE_ZH_CN:
             SetUiLanguage(L"zh-CN");
