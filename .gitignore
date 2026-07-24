@@ -22,3 +22,4 @@
 /run_test_video.cmd
 /scripts/run_test_video.ps1
 *.ko.whisper.srt
+capture*.png
