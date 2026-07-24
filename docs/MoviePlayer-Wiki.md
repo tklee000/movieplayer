@@ -1,4 +1,4 @@
-# MoviePlayer 0.1 Technical Guide
+# MoviePlayer 0.2 Technical Guide
 
 MoviePlayer is a native Windows x64 video player written in C++17. It combines
 a first-party media layer with selected Windows platform decoders, D3D11/DXVA
@@ -31,7 +31,7 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Video | H.264, HEVC Main10 4:2:0 for the supported DXVA path, and Xvid/DX50 MPEG-4 Part 2 |
 | Audio | AAC-LC at 24, 44.1, or 48 kHz; stereo, 5.1, and PCE 7.1 downmix paths; MP3 in AVI; XAudio2 output |
 | Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
-| Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text; optional local transcription and translation |
+| Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
 | UI languages | English, Japanese, Korean, French, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 

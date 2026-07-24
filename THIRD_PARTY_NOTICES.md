@@ -1,7 +1,7 @@
 # MoviePlayer third-party components and license notices
 
 This document describes the third-party components in the current MoviePlayer
-0.1 source tree and Windows x64 binary package. The original license text from
+0.2 source tree and Windows x64 binary package. The original license text from
 each rights holder takes precedence over this summary. This document is not
 legal advice.
 

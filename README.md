@@ -1,4 +1,4 @@
-# MoviePlayer 0.1
+# MoviePlayer 0.2
 
 MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
@@ -30,7 +30,7 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Container: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
   decode/composition timing, sync samples, `avcC`, `hvcC`, and `esds`; plus
   focused Matroska/MKV playback with `SeekHead`, `Cues`, clusters, block groups,
-  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC, and text subtitle tracks;
+  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC, and text/bitmap subtitle tracks;
   plus classic indexed RIFF AVI (`idx1`) for Xvid/DX50 and MP3.
 - Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
   decoder with NV12 output, including the tested High Profile Level 4.2 title;
@@ -45,7 +45,8 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Seeking: MP4 sync-sample, MKV cue, and AVI keyframe-index seek with decoder
   and audio-clock reset.
 - Subtitles: external SRT, ASS/SSA, and SMI display; Matroska embedded
-  `S_TEXT/ASS`, `S_TEXT/SSA`, and `S_TEXT/UTF8`; plus an optional local native AI
+  `S_TEXT/ASS`, `S_TEXT/SSA`, `S_TEXT/UTF8`, and DVD VobSub (`S_VOBSUB`) bitmap
+  subtitles with zlib decompression; plus an optional local native AI
   transcription/translation worker. The worker reuses the built-in MP4/AAC
   stack and a 63-tap 48 kHz-to-16 kHz FIR resampler.
 - Scaling: D3D11 video processing and optional NVIDIA RTX Video VSR.

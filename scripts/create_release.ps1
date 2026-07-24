@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.1',
+    [string]$Version = '0.2',
     [switch]$SkipBuild
 )
 
@@ -8,8 +8,8 @@ $Root = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Pat
 $Artifacts = Join-Path $Root 'artifacts'
 $Deploy = Join-Path $Root 'deploy'
 
-if ($Version -ne '0.1') {
-    throw "This source tree declares version 0.1; refusing to package version $Version."
+if ($Version -ne '0.2') {
+    throw "This source tree declares version 0.2; refusing to package version $Version."
 }
 
 if (-not $SkipBuild) {

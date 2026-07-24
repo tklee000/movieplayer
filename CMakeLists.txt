@@ -4,7 +4,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-project(MoviePlayer VERSION 0.1.0.0 LANGUAGES C CXX RC)
+project(MoviePlayer VERSION 0.2.0.0 LANGUAGES C CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "MoviePlayer is a native Win32 application and must be built on Windows.")

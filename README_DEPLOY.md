@@ -1,4 +1,4 @@
-# MoviePlayer 0.1 binary package
+# MoviePlayer 0.2 binary package
 
 Run `MoviePlayer.exe` from this folder. Required VC142 runtime DLLs are supplied
 beside the application, so a system-wide Visual C++ 2019 Redistributable

@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..')).Path
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $VsWhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-$ExpectedFileVersion = '0.1.0.0'
+$ExpectedFileVersion = '0.2.0.0'
 
 & (Join-Path $Root 'scripts\validate_languages.ps1')
 
