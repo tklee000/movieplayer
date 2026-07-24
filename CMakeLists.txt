@@ -133,8 +133,12 @@ add_library(MovieCodecCore STATIC
     src/codec/core/CodecTypes.h
     src/codec/core/RandomAccessFile.cpp
     src/codec/core/RandomAccessFile.h
+    src/codec/core/ZlibInflater.cpp
+    src/codec/core/ZlibInflater.h
     src/codec/subtitle/TextSubtitleDecoder.cpp
     src/codec/subtitle/TextSubtitleDecoder.h
+    src/codec/subtitle/VobSubDecoder.cpp
+    src/codec/subtitle/VobSubDecoder.h
     src/codec/container/MediaDemuxer.cpp
     src/codec/container/MediaDemuxer.h
     src/codec/container/avi/AviDemuxer.cpp

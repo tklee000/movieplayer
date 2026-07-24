@@ -46,6 +46,7 @@ enum class CodecId {
     Mp3,
     SubRip,
     Ass,
+    VobSub,
 };
 
 enum class ColorRange {
@@ -164,6 +165,19 @@ struct AudioFrame {
     int channels = 0;
     std::uint64_t channelMask = 0;
     double pts = 0.0;
+};
+
+// Premultiplied BGRA subtitle pixels positioned in the subtitle stream's
+// original canvas. Bitmap subtitle formats (for example DVD VobSub) use this
+// instead of converting their artwork to text.
+struct SubtitleBitmap {
+    int canvasWidth = 0;
+    int canvasHeight = 0;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> bgra;
 };
 
 constexpr double kInvalidTimestamp = -std::numeric_limits<double>::infinity();

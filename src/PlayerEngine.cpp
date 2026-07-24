@@ -6,6 +6,7 @@
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/container/MediaDemuxer.h"
 #include "codec/subtitle/TextSubtitleDecoder.h"
+#include "codec/subtitle/VobSubDecoder.h"
 #include "codec/video/h264/MfH264Decoder.h"
 #include "codec/video/hevc/D3D11HevcDecoder.h"
 
@@ -192,6 +193,7 @@ struct PlayerEngine::Impl {
         double start = 0.0;
         double end = 0.0;
         std::wstring text;
+        std::shared_ptr<const movieplayer::codec::SubtitleBitmap> bitmap;
     };
     std::deque<EmbeddedCue> embeddedCues;
     mutable std::mutex subtitleMutex;
@@ -352,7 +354,8 @@ struct PlayerEngine::Impl {
                 foundVideo = true;
             } else if (track.type == TrackType::Subtitle &&
                        (track.codec == CodecId::SubRip ||
-                        track.codec == CodecId::Ass)) {
+                        track.codec == CodecId::Ass ||
+                        track.codec == CodecId::VobSub)) {
                 subtitleTracks.push_back(track);
                 if (!hasEmbeddedSubtitle ||
                     (track.defaultTrack && !selectedDefaultSubtitle)) {
@@ -532,11 +535,39 @@ struct PlayerEngine::Impl {
                 accepted = audioPackets.Push(std::move(sample));
             else if (hasEmbeddedSubtitle &&
                      sample.trackId == subtitleTrack.trackId) {
-                std::wstring text;
                 std::wstring subtitleError;
-                if (movieplayer::codec::subtitle::DecodeTextSample(
-                        subtitleTrack, sample, text, subtitleError) &&
-                    !text.empty()) {
+                if (subtitleTrack.codec == CodecId::VobSub) {
+                    movieplayer::codec::subtitle::VobSubFrame decoded;
+                    if (movieplayer::codec::subtitle::DecodeVobSubSample(
+                            subtitleTrack, sample, decoded, subtitleError) &&
+                        !decoded.bitmap.bgra.empty()) {
+                        EmbeddedCue cue;
+                        cue.start = sample.PtsSeconds() +
+                                    decoded.startDelaySeconds;
+                        const double sampleDuration = sample.DurationSeconds();
+                        cue.end = decoded.endDelaySeconds >
+                                          decoded.startDelaySeconds
+                                      ? sample.PtsSeconds() +
+                                            decoded.endDelaySeconds
+                                      : cue.start +
+                                            (sampleDuration > 0.0
+                                                 ? sampleDuration
+                                                 : 5.0);
+                        cue.bitmap =
+                            std::make_shared<movieplayer::codec::SubtitleBitmap>(
+                                std::move(decoded.bitmap));
+                        std::lock_guard<std::mutex> subtitleLock(subtitleMutex);
+                        embeddedCues.push_back(std::move(cue));
+                        while (embeddedCues.size() > 256U)
+                            embeddedCues.pop_front();
+                    }
+                } else {
+                    std::wstring text;
+                    if (!movieplayer::codec::subtitle::DecodeTextSample(
+                            subtitleTrack, sample, text, subtitleError) ||
+                        text.empty()) {
+                        continue;
+                    }
                     EmbeddedCue cue;
                     cue.start = sample.PtsSeconds();
                     const double subtitleDuration = sample.DurationSeconds();
@@ -792,11 +823,27 @@ struct PlayerEngine::Impl {
         return result;
     }
 
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap>
+    EmbeddedSubtitleBitmap() const {
+        if (!hasEmbeddedSubtitle || !opened.load()) return {};
+        const double position = CurrentPosition();
+        std::lock_guard<std::mutex> lock(subtitleMutex);
+        for (auto cue = embeddedCues.rbegin(); cue != embeddedCues.rend(); ++cue) {
+            if (cue->bitmap && cue->start <= position && position < cue->end)
+                return cue->bitmap;
+        }
+        return {};
+    }
+
     std::wstring EmbeddedSubtitleDescription() const {
         if (!hasEmbeddedSubtitle) return {};
-        std::wstring result = subtitleTrack.codec == CodecId::Ass
-                                  ? L"Embedded ASS"
-                                  : L"Embedded UTF-8";
+        std::wstring result;
+        if (subtitleTrack.codec == CodecId::Ass)
+            result = L"Embedded ASS";
+        else if (subtitleTrack.codec == CodecId::VobSub)
+            result = L"Embedded VobSub";
+        else
+            result = L"Embedded UTF-8";
         if (!subtitleTrack.language.empty()) {
             result += L" (";
             result.append(subtitleTrack.language.begin(),
@@ -887,6 +934,10 @@ bool PlayerEngine::SelectEmbeddedSubtitleTrack(std::uint32_t trackId) {
 }
 std::wstring PlayerEngine::EmbeddedSubtitleText() const {
     return impl_->EmbeddedSubtitleText();
+}
+std::shared_ptr<const movieplayer::codec::SubtitleBitmap>
+PlayerEngine::EmbeddedSubtitleBitmap() const {
+    return impl_->EmbeddedSubtitleBitmap();
 }
 std::wstring PlayerEngine::EmbeddedSubtitleDescription() const {
     return impl_->EmbeddedSubtitleDescription();

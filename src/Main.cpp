@@ -939,9 +939,12 @@ private:
         const movieplayer::codec::TrackInfo& track, std::size_t index) const {
         std::wstring label = std::to_wstring(index + 1) + L". ";
         const std::wstring name = Utf8ToWide(track.name);
-        const std::wstring codec = track.codec == movieplayer::codec::CodecId::Ass
-                                       ? L"ASS"
-                                       : L"SRT/UTF-8";
+        const std::wstring codec =
+            track.codec == movieplayer::codec::CodecId::Ass
+                ? L"ASS"
+                : track.codec == movieplayer::codec::CodecId::VobSub
+                      ? L"VobSub"
+                      : L"SRT/UTF-8";
         label += name.empty() ? codec : name + L" — " + codec;
         const std::wstring language = Utf8ToWide(track.language);
         if (!language.empty() && language != L"und") {
@@ -1902,6 +1905,7 @@ private:
                     subtitleTrack_.Clear();
                     subtitleEnabled_ = true;
                     displayedSubtitle_.clear();
+                    displayedSubtitleBitmap_.reset();
                     UpdateSubtitleText(true);
                     endedHandled_ = false;
                 }
@@ -2030,6 +2034,7 @@ private:
         case ID_SUBTITLE_OFF:
             subtitleEnabled_ = false;
             displayedSubtitle_.clear();
+            displayedSubtitleBitmap_.reset();
             renderer_.SetSubtitleText(L"");
             RedrawLastFrame();
             break;
@@ -2168,6 +2173,7 @@ private:
         subtitleTrack_ = std::move(loaded);
         subtitleEnabled_ = true;
         displayedSubtitle_.clear();
+        displayedSubtitleBitmap_.reset();
         UpdateSubtitleText(true);
         UpdateControls(true);
         return true;
@@ -2494,17 +2500,25 @@ private:
 
     void UpdateSubtitleText(bool redraw) {
         std::wstring text;
+        std::shared_ptr<const movieplayer::codec::SubtitleBitmap> bitmap;
         if (subtitleEnabled_) {
             if (!subtitleTrack_.Empty())
                 text = subtitleTrack_.TextAt(engine_.CurrentPosition());
-            else if (engine_.HasEmbeddedSubtitles())
+            else if (engine_.HasEmbeddedSubtitles()) {
                 text = engine_.EmbeddedSubtitleText();
+                bitmap = engine_.EmbeddedSubtitleBitmap();
+            }
         }
-        if (text == displayedSubtitle_) {
+        if (text == displayedSubtitle_ &&
+            bitmap == displayedSubtitleBitmap_) {
             return;
         }
         displayedSubtitle_ = std::move(text);
-        renderer_.SetSubtitleText(displayedSubtitle_);
+        displayedSubtitleBitmap_ = std::move(bitmap);
+        if (displayedSubtitleBitmap_)
+            renderer_.SetSubtitleBitmap(displayedSubtitleBitmap_);
+        else
+            renderer_.SetSubtitleText(displayedSubtitle_);
         if (redraw) {
             RedrawLastFrame();
         }
@@ -2522,6 +2536,7 @@ private:
         subtitleTrack_.Clear();
         subtitleEnabled_ = false;
         displayedSubtitle_.clear();
+        displayedSubtitleBitmap_.reset();
         renderer_.SetSubtitleText(L"");
         lastFrame_.reset();
         renderer_.Clear();
@@ -2561,6 +2576,7 @@ private:
         subtitleTrack_.Clear();
         subtitleEnabled_ = false;
         displayedSubtitle_.clear();
+        displayedSubtitleBitmap_.reset();
         renderer_.SetSubtitleText(L"");
         lastFrame_.reset();
         currentPath_.clear();
@@ -2658,6 +2674,7 @@ private:
         trackingSeek_ = false;
         endedHandled_ = false;
         displayedSubtitle_.clear();
+        displayedSubtitleBitmap_.reset();
         renderer_.SetSubtitleText(L"");
         if (!engine_.Seek(target)) {
             const std::wstring error = engine_.LastError();
@@ -2914,7 +2931,7 @@ private:
             } else {
                 status += engine_.EmbeddedSubtitleDescription();
             }
-            if (!displayedSubtitle_.empty()) {
+            if (!displayedSubtitle_.empty() || displayedSubtitleBitmap_) {
                 status += L" (" + Localization::Text("status.subtitle_showing") + L")";
             }
         }
@@ -3055,6 +3072,8 @@ private:
     std::wstring currentPath_;
     SubtitleTrack subtitleTrack_;
     std::wstring displayedSubtitle_;
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap>
+        displayedSubtitleBitmap_;
     WhisperSubtitleJob whisperJob_;
     HANDLE whisperInstallerProcess_ = nullptr;
     std::wstring whisperSourcePath_;

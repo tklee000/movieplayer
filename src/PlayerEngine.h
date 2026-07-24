@@ -50,6 +50,8 @@ public:
     std::uint32_t SelectedEmbeddedSubtitleTrackId() const;
     bool SelectEmbeddedSubtitleTrack(std::uint32_t trackId);
     std::wstring EmbeddedSubtitleText() const;
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap>
+    EmbeddedSubtitleBitmap() const;
     std::wstring EmbeddedSubtitleDescription() const;
     double Duration() const;
     double CurrentPosition() const;

@@ -233,6 +233,7 @@ struct D3DRenderer::Impl {
     ComPtr<ID3D11RenderTargetView> renderTarget;
 
     std::wstring subtitleText;
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap> subtitleBitmap;
     std::wstring subtitleFontFamily;
     bool fullscreenSubtitleScale = false;
     RECT lastVideoRect = {};
@@ -276,6 +277,8 @@ struct D3DRenderer::Impl {
     UINT subtitleTextureWidth = 0;
     UINT subtitleTextureHeight = 0;
     std::wstring renderedSubtitleText;
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap>
+        renderedSubtitleBitmap;
     RECT renderedSubtitleVideoRect = {};
     float renderedSubtitleFontSize = 0.0f;
 
@@ -339,6 +342,7 @@ struct D3DRenderer::Impl {
         subtitleBlendState.Reset();
         subtitleTextureWidth = subtitleTextureHeight = 0;
         renderedSubtitleText.clear();
+        renderedSubtitleBitmap.reset();
         sampler.Reset();
         hdrToneMapPixelShader.Reset();
         pixelShader.Reset();
@@ -529,13 +533,95 @@ struct D3DRenderer::Impl {
         }
         context->Unmap(subtitleTexture.Get(), 0);
         renderedSubtitleText = subtitleText;
+        renderedSubtitleBitmap.reset();
         renderedSubtitleVideoRect = lastVideoRect;
+        return true;
+    }
+
+    bool BuildBitmapSubtitleTexture()
+    {
+        if (!subtitleBitmap || subtitleBitmap->width <= 0 ||
+            subtitleBitmap->height <= 0) {
+            return false;
+        }
+        const UINT width = static_cast<UINT>(subtitleBitmap->width);
+        const UINT height = static_cast<UINT>(subtitleBitmap->height);
+        const size_t rowBytes = static_cast<size_t>(width) * 4U;
+        if (subtitleBitmap->bgra.size() != rowBytes * height) {
+            return Fail(L"The decoded subtitle bitmap has an invalid size");
+        }
+        if (!subtitleTexture || subtitleTextureWidth != width ||
+            subtitleTextureHeight != height) {
+            subtitleView.Reset();
+            subtitleTexture.Reset();
+            D3D11_TEXTURE2D_DESC textureDesc = {};
+            textureDesc.Width = width;
+            textureDesc.Height = height;
+            textureDesc.MipLevels = 1;
+            textureDesc.ArraySize = 1;
+            textureDesc.Format = kSwapChainFormat;
+            textureDesc.SampleDesc.Count = 1;
+            textureDesc.Usage = D3D11_USAGE_DYNAMIC;
+            textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            HRESULT hr = device->CreateTexture2D(&textureDesc, nullptr,
+                                                  &subtitleTexture);
+            if (FAILED(hr)) {
+                return Fail(L"ID3D11Device::CreateTexture2D(bitmap subtitle)",
+                            hr);
+            }
+            hr = device->CreateShaderResourceView(subtitleTexture.Get(), nullptr,
+                                                  &subtitleView);
+            if (FAILED(hr)) {
+                return Fail(L"ID3D11Device::CreateShaderResourceView(bitmap subtitle)",
+                            hr);
+            }
+            subtitleTextureWidth = width;
+            subtitleTextureHeight = height;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        const HRESULT hr = context->Map(subtitleTexture.Get(), 0,
+                                        D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr)) {
+            return Fail(L"ID3D11DeviceContext::Map(bitmap subtitle)", hr);
+        }
+        for (UINT y = 0; y < height; ++y) {
+            memcpy(static_cast<uint8_t*>(mapped.pData) +
+                       static_cast<size_t>(y) * mapped.RowPitch,
+                   subtitleBitmap->bgra.data() +
+                       static_cast<size_t>(y) * rowBytes,
+                   rowBytes);
+        }
+        context->Unmap(subtitleTexture.Get(), 0);
+        renderedSubtitleBitmap = subtitleBitmap;
+        renderedSubtitleText.clear();
+        return true;
+    }
+
+    bool CompositeSubtitleTexture(const D3D11_VIEWPORT& viewport)
+    {
+        const float blendFactor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        context->OMSetRenderTargets(1, renderTarget.GetAddressOf(), nullptr);
+        context->OMSetBlendState(subtitleBlendState.Get(), blendFactor,
+                                 0xFFFFFFFFU);
+        context->RSSetViewports(1, &viewport);
+        context->IASetInputLayout(nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vertexShader.Get(), nullptr, 0);
+        context->PSSetShader(pixelShader.Get(), nullptr, 0);
+        context->PSSetSamplers(0, 1, sampler.GetAddressOf());
+        context->PSSetShaderResources(0, 1, subtitleView.GetAddressOf());
+        context->Draw(3, 0);
+        ID3D11ShaderResourceView* nullView = nullptr;
+        context->PSSetShaderResources(0, 1, &nullView);
+        context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFFU);
         return true;
     }
 
     bool DrawSubtitleD3D()
     {
-        if (subtitleText.empty()) {
+        if (subtitleText.empty() && !subtitleBitmap) {
             return true;
         }
         RECT videoRect = lastVideoRect;
@@ -544,6 +630,53 @@ struct D3DRenderer::Impl {
         }
         const UINT videoWidth = static_cast<UINT>(videoRect.right - videoRect.left);
         const UINT videoHeight = static_cast<UINT>(videoRect.bottom - videoRect.top);
+        if (subtitleBitmap) {
+            if (subtitleBitmap->canvasWidth <= 0 ||
+                subtitleBitmap->canvasHeight <= 0 ||
+                subtitleBitmap->x < 0 || subtitleBitmap->y < 0 ||
+                subtitleBitmap->x + subtitleBitmap->width >
+                    subtitleBitmap->canvasWidth ||
+                subtitleBitmap->y + subtitleBitmap->height >
+                    subtitleBitmap->canvasHeight) {
+                return Fail(L"The decoded subtitle bitmap is outside its canvas");
+            }
+            if (!subtitleView || renderedSubtitleBitmap != subtitleBitmap ||
+                subtitleTextureWidth !=
+                    static_cast<UINT>(subtitleBitmap->width) ||
+                subtitleTextureHeight !=
+                    static_cast<UINT>(subtitleBitmap->height)) {
+                if (!BuildBitmapSubtitleTexture()) return false;
+            }
+            float scaleX = static_cast<float>(videoWidth) /
+                           subtitleBitmap->canvasWidth;
+            float scaleY = static_cast<float>(videoHeight) /
+                           subtitleBitmap->canvasHeight;
+            float canvasLeft = static_cast<float>(videoRect.left);
+            float canvasTop = static_cast<float>(videoRect.top);
+            if (subtitleBitmap->canvasWidth > 720 ||
+                subtitleBitmap->canvasHeight > 576) {
+                // HD VobSub canvases use square pixels and commonly retain the
+                // uncropped 16:9 source size while x265 video is cropped to the
+                // active film area. Preserve the glyph aspect and center-crop
+                // the subtitle canvas in exactly the same way.
+                const float scale = (std::max)(scaleX, scaleY);
+                scaleX = scaleY = scale;
+                canvasLeft +=
+                    (videoWidth - subtitleBitmap->canvasWidth * scale) * 0.5f;
+                canvasTop +=
+                    (videoHeight - subtitleBitmap->canvasHeight * scale) * 0.5f;
+            }
+            D3D11_VIEWPORT viewport = {};
+            viewport.TopLeftX = canvasLeft + subtitleBitmap->x * scaleX;
+            viewport.TopLeftY = canvasTop + subtitleBitmap->y * scaleY;
+            viewport.Width = (std::max)(1.0f,
+                                        subtitleBitmap->width * scaleX);
+            viewport.Height = (std::max)(1.0f,
+                                         subtitleBitmap->height * scaleY);
+            viewport.MinDepth = 0.0f;
+            viewport.MaxDepth = 1.0f;
+            return CompositeSubtitleTexture(viewport);
+        }
         const UINT textureWidth = (std::max)(1U, static_cast<UINT>(std::lround(videoWidth * 0.90)));
         const UINT textureHeight = (std::max)(1U, static_cast<UINT>(std::lround(videoHeight * 0.30)));
         const float minimumFontSize = fullscreenSubtitleScale ? 26.0f : 22.0f;
@@ -574,21 +707,7 @@ struct D3DRenderer::Impl {
         viewport.MinDepth = 0.0f;
         viewport.MaxDepth = 1.0f;
 
-        const float blendFactor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        context->OMSetRenderTargets(1, renderTarget.GetAddressOf(), nullptr);
-        context->OMSetBlendState(subtitleBlendState.Get(), blendFactor, 0xFFFFFFFFU);
-        context->RSSetViewports(1, &viewport);
-        context->IASetInputLayout(nullptr);
-        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->VSSetShader(vertexShader.Get(), nullptr, 0);
-        context->PSSetShader(pixelShader.Get(), nullptr, 0);
-        context->PSSetSamplers(0, 1, sampler.GetAddressOf());
-        context->PSSetShaderResources(0, 1, subtitleView.GetAddressOf());
-        context->Draw(3, 0);
-        ID3D11ShaderResourceView* nullView = nullptr;
-        context->PSSetShaderResources(0, 1, &nullView);
-        context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFFU);
-        return true;
+        return CompositeSubtitleTexture(viewport);
     }
 
     bool CreateShaders()
@@ -922,7 +1041,7 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
 
     bool Present()
     {
-        if (!subtitleText.empty()) {
+        if (!subtitleText.empty() || subtitleBitmap) {
             if (!DrawSubtitleD3D()) {
                 return false;
             }
@@ -1509,6 +1628,17 @@ void D3DRenderer::SetSubtitleText(const std::wstring& text)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->subtitleText = text;
+    impl_->subtitleBitmap.reset();
+    impl_->renderedSubtitleText.clear();
+}
+
+void D3DRenderer::SetSubtitleBitmap(
+    std::shared_ptr<const movieplayer::codec::SubtitleBitmap> bitmap)
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->subtitleText.clear();
+    impl_->subtitleBitmap = std::move(bitmap);
+    impl_->renderedSubtitleBitmap.reset();
 }
 
 void D3DRenderer::SetSubtitleFontFamily(const std::wstring& fontFamily)

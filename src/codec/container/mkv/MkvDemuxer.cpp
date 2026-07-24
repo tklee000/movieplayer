@@ -1,6 +1,7 @@
 #include "codec/container/mkv/MkvDemuxer.h"
 
 #include "codec/core/RandomAccessFile.h"
+#include "codec/core/ZlibInflater.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,6 +117,9 @@ struct MkvDemuxer::Impl {
         std::uint64_t defaultDurationNs = 0;
         bool defaultTrack = true;
         bool enabled = false;
+        bool zlibCompressed = false;
+        bool unsupportedCompression = false;
+        std::vector<std::uint8_t> strippedHeader;
     };
 
     struct Cue {
@@ -273,6 +277,52 @@ struct MkvDemuxer::Impl {
         }
     }
 
+    void ParseContentEncodings(const MemoryElement& encodings, Track& track) {
+        std::size_t outer = 0;
+        MemoryElement encoding;
+        while (NextElement(encodings.data, encodings.size, outer, encoding)) {
+            if (encoding.id != 0x6240) continue;  // ContentEncoding
+            std::uint64_t scope = 1;
+            std::uint64_t type = 0;
+            std::uint64_t algorithm = 0;
+            bool hasCompression = false;
+            std::vector<std::uint8_t> settings;
+            std::size_t inner = 0;
+            MemoryElement child;
+            while (NextElement(encoding.data, encoding.size, inner, child)) {
+                if (child.id == 0x5032) {
+                    scope = ReadBigEndian(child.data, child.size);
+                } else if (child.id == 0x5033) {
+                    type = ReadBigEndian(child.data, child.size);
+                } else if (child.id == 0x5034) {  // ContentCompression
+                    hasCompression = true;
+                    std::size_t nested = 0;
+                    MemoryElement compression;
+                    while (NextElement(child.data, child.size, nested,
+                                       compression)) {
+                        if (compression.id == 0x4254)
+                            algorithm = ReadBigEndian(compression.data,
+                                                      compression.size);
+                        else if (compression.id == 0x4255)
+                            settings.assign(compression.data,
+                                            compression.data + compression.size);
+                    }
+                }
+            }
+            // Type 0 is compression and scope bit 0 applies it to every frame.
+            // An empty ContentCompression element means the Matroska default:
+            // algorithm 0 (zlib), as used by MKVToolNix for VobSub streams.
+            if (!hasCompression || type != 0 || (scope & 1U) == 0) continue;
+            if (algorithm == 0) {
+                track.zlibCompressed = true;
+            } else if (algorithm == 3) {
+                track.strippedHeader = std::move(settings);
+            } else {
+                track.unsupportedCompression = true;
+            }
+        }
+    }
+
     bool ParseTrackEntry(const MemoryElement& entry) {
         Track track;
         std::uint64_t trackType = 0;
@@ -293,6 +343,7 @@ struct MkvDemuxer::Impl {
             else if (child.id == 0x536e) track.info.name = ReadString(child);
             else if (child.id == 0xe0) ParseVideo(child, track);
             else if (child.id == 0xe1) ParseAudio(child, track);
+            else if (child.id == 0x6d80) ParseContentEncodings(child, track);
         }
         if (track.number == 0 || track.number >
                                      (std::numeric_limits<std::uint32_t>::max)()) {
@@ -324,10 +375,15 @@ struct MkvDemuxer::Impl {
                 track.info.codec = CodecId::SubRip;
             else if (codecId == "S_TEXT/ASS" || codecId == "S_TEXT/SSA")
                 track.info.codec = CodecId::Ass;
+            else if (codecId == "S_VOBSUB")
+                track.info.codec = CodecId::VobSub;
         } else {
             return true;
         }
-        if (track.info.codec != CodecId::Unknown) tracks.push_back(std::move(track));
+        if (track.info.codec != CodecId::Unknown &&
+            !track.unsupportedCompression) {
+            tracks.push_back(std::move(track));
+        }
         return true;
     }
 
@@ -541,6 +597,20 @@ struct MkvDemuxer::Impl {
             const std::size_t frameOffset = position + frames[i].first;
             sample.bytes.assign(data + frameOffset,
                                 data + frameOffset + frames[i].second);
+            if (track->zlibCompressed) {
+                std::vector<std::uint8_t> inflated;
+                std::wstring inflateError;
+                if (!InflateZlib(sample.bytes.data(), sample.bytes.size(),
+                                 inflated, inflateError)) {
+                    return Fail(L"Could not decompress a Matroska track frame: " +
+                                inflateError);
+                }
+                sample.bytes = std::move(inflated);
+            } else if (!track->strippedHeader.empty()) {
+                sample.bytes.insert(sample.bytes.begin(),
+                                    track->strippedHeader.begin(),
+                                    track->strippedHeader.end());
+            }
             pending.push_back(std::move(sample));
         }
         return true;

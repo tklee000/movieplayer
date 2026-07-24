@@ -2,6 +2,7 @@
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/container/MediaDemuxer.h"
 #include "codec/subtitle/TextSubtitleDecoder.h"
+#include "codec/subtitle/VobSubDecoder.h"
 #include "codec/video/h264/MfH264Decoder.h"
 #include "codec/video/hevc/D3D11HevcDecoder.h"
 
@@ -78,17 +79,30 @@ bool ReadNv12LumaRange(ID3D11Device* device, ID3D11DeviceContext* context,
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2 && argc != 3) {
         std::wcerr << L"usage: MovieCodecSmoke <input> "
-                      L"[decoded-f32le|--audio-track=N|--probe]\n";
+                      L"[decoded-f32le|--audio-track=N|--probe|"
+                      L"--subtitle-probe]\n";
         return 2;
     }
     std::uint32_t requestedAudioTrack = 0;
     bool probeOnly = false;
+    bool subtitleProbeOnly = false;
+    double subtitleProbeTime = 0.0;
     std::ofstream audioDump;
     if (argc == 3) {
         const std::wstring option = argv[2];
         constexpr wchar_t prefix[] = L"--audio-track=";
         if (option == L"--probe") {
             probeOnly = true;
+        } else if (option == L"--subtitle-probe") {
+            subtitleProbeOnly = true;
+        } else if (option.rfind(L"--subtitle-probe=", 0) == 0) {
+            try {
+                subtitleProbeTime = std::stod(option.substr(17));
+                subtitleProbeOnly = true;
+            } catch (const std::exception&) {
+                std::wcerr << L"invalid subtitle probe time\n";
+                return 2;
+            }
         } else if (option.rfind(prefix, 0) == 0) {
             try {
                 requestedAudioTrack = static_cast<std::uint32_t>(
@@ -148,7 +162,8 @@ int wmain(int argc, wchar_t** argv) {
             audioTrack = &track;
         }
         if (track.type == TrackType::Subtitle &&
-            (track.codec == CodecId::Ass || track.codec == CodecId::SubRip) &&
+            (track.codec == CodecId::Ass || track.codec == CodecId::SubRip ||
+             track.codec == CodecId::VobSub) &&
             (!subtitleTrack || track.defaultTrack)) {
             subtitleTrack = &track;
         }
@@ -171,6 +186,79 @@ int wmain(int argc, wchar_t** argv) {
                 demuxer->SetTrackEnabled(track.trackId,
                                          track.trackId == subtitleTrack->trackId);
         }
+    }
+    if (subtitleProbeOnly) {
+        if (!subtitleTrack) {
+            std::wcerr << L"no supported embedded subtitle track\n";
+            return 18;
+        }
+        for (const TrackInfo& track : demuxer->Tracks()) {
+            demuxer->SetTrackEnabled(track.trackId,
+                                     track.trackId == subtitleTrack->trackId);
+        }
+        if (subtitleProbeTime > 0.0) {
+            double decodeStart = 0.0;
+            if (!demuxer->Seek(subtitleProbeTime, decodeStart)) {
+                std::wcerr << L"subtitle probe seek failed: "
+                           << demuxer->LastError() << L"\n";
+                return 19;
+            }
+        }
+        for (unsigned i = 0; i < 10000; ++i) {
+            EncodedSample sample;
+            bool eof = false;
+            if (!demuxer->ReadNextSample(sample, eof)) {
+                std::wcerr << L"subtitle demux failed: "
+                           << demuxer->LastError() << L"\n";
+                return 19;
+            }
+            if (eof) break;
+            if (sample.trackId != subtitleTrack->trackId) continue;
+            std::wstring subtitleError;
+            if (subtitleTrack->codec == CodecId::VobSub) {
+                subtitle::VobSubFrame decoded;
+                if (!subtitle::DecodeVobSubSample(*subtitleTrack, sample,
+                                                  decoded, subtitleError)) {
+                    std::wcerr << L"VobSub decode failed: " << subtitleError
+                               << L"\n";
+                    return 20;
+                }
+                const std::size_t visible = static_cast<std::size_t>(
+                    std::count_if(decoded.bitmap.bgra.begin() + 3,
+                                  decoded.bitmap.bgra.end(),
+                                  [index = std::size_t{3}](std::uint8_t value) mutable {
+                                      const bool alpha = (index & 3U) == 3U &&
+                                                         value != 0;
+                                      ++index;
+                                      return alpha;
+                                  }));
+                std::wcout << L"subtitle-ok track=" << subtitleTrack->trackId
+                           << L" pts=" << sample.PtsSeconds() << L" canvas="
+                           << decoded.bitmap.canvasWidth << L"x"
+                           << decoded.bitmap.canvasHeight << L" rect="
+                           << decoded.bitmap.x << L"," << decoded.bitmap.y
+                           << L" " << decoded.bitmap.width << L"x"
+                           << decoded.bitmap.height << L" visible=" << visible
+                           << L" duration="
+                           << (decoded.endDelaySeconds -
+                               decoded.startDelaySeconds)
+                           << L"\n";
+                return visible != 0 ? 0 : 21;
+            }
+            std::wstring text;
+            if (!subtitle::DecodeTextSample(*subtitleTrack, sample, text,
+                                            subtitleError)) {
+                std::wcerr << L"text subtitle decode failed: "
+                           << subtitleError << L"\n";
+                return 20;
+            }
+            std::wcout << L"subtitle-ok track=" << subtitleTrack->trackId
+                       << L" pts=" << sample.PtsSeconds() << L" length="
+                       << text.size() << L"\n";
+            return text.empty() ? 21 : 0;
+        }
+        std::wcerr << L"no subtitle sample was found\n";
+        return 22;
     }
 
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
@@ -323,21 +411,32 @@ int wmain(int argc, wchar_t** argv) {
                 ++audioFrames;
             } else if (subtitleTrack &&
                        sample.trackId == subtitleTrack->trackId) {
-                std::wstring text;
                 std::wstring subtitleError;
-                if (!subtitle::DecodeTextSample(*subtitleTrack, sample, text,
-                                                subtitleError)) {
-                    std::wcerr << L"embedded subtitle decode failed: "
-                               << subtitleError << L"\n";
-                    return false;
-                }
-                if (!text.empty()) {
-                    if (firstSubtitle.empty() && text.size() >= 4U) {
-                        firstSubtitle = text;
-                        firstSubtitleStart = sample.PtsSeconds();
-                        firstSubtitleDuration = sample.DurationSeconds();
+                if (subtitleTrack->codec == CodecId::VobSub) {
+                    subtitle::VobSubFrame decoded;
+                    if (!subtitle::DecodeVobSubSample(
+                            *subtitleTrack, sample, decoded, subtitleError)) {
+                        std::wcerr << L"embedded VobSub decode failed: "
+                                   << subtitleError << L"\n";
+                        return false;
                     }
-                    ++subtitleSamples;
+                    if (!decoded.bitmap.bgra.empty()) ++subtitleSamples;
+                } else {
+                    std::wstring text;
+                    if (!subtitle::DecodeTextSample(*subtitleTrack, sample, text,
+                                                    subtitleError)) {
+                        std::wcerr << L"embedded subtitle decode failed: "
+                                   << subtitleError << L"\n";
+                        return false;
+                    }
+                    if (!text.empty()) {
+                        if (firstSubtitle.empty() && text.size() >= 4U) {
+                            firstSubtitle = text;
+                            firstSubtitleStart = sample.PtsSeconds();
+                            firstSubtitleDuration = sample.DurationSeconds();
+                        }
+                        ++subtitleSamples;
+                    }
                 }
             }
         }

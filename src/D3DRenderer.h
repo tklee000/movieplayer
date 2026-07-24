@@ -41,6 +41,8 @@ public:
     // Drawn after HDR/SDR video conversion and before Present. Script-aware
     // Windows UI fonts keep CJK, Devanagari, and right-to-left text readable.
     void SetSubtitleText(const std::wstring& text);
+    void SetSubtitleBitmap(
+        std::shared_ptr<const movieplayer::codec::SubtitleBitmap> bitmap);
     void SetSubtitleFontFamily(const std::wstring& fontFamily);
     void SetFullscreenSubtitleScale(bool enabled);
 
