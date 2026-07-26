@@ -16,6 +16,7 @@
 #include <cstring>
 #include <iomanip>
 #include <limits>
+#include <queue>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -70,6 +71,17 @@ struct MfH264Decoder::Impl {
     ComPtr<IMFTransform> transform;
     ComPtr<IMFMediaType> outputType;
     std::vector<Surface> surfaces;
+    // The Media Foundation decoder emits H.264 pictures in display order, but
+    // it preserves timestamps attached to compressed samples. Some MP4 files
+    // contain B pictures without a ctts table, so those timestamps still
+    // describe decode order and move backwards at the decoder output. Assign
+    // the earliest submitted presentation timestamp to each displayed picture
+    // for both well-formed and ctts-less streams.
+    std::priority_queue<
+        std::pair<LONGLONG, LONGLONG>,
+        std::vector<std::pair<LONGLONG, LONGLONG>>,
+        std::greater<std::pair<LONGLONG, LONGLONG>>>
+        pendingPresentationTimes;
     TrackInfo track;
     std::vector<std::uint8_t> parameterSets;
     std::wstring description;
@@ -94,6 +106,7 @@ struct MfH264Decoder::Impl {
 
     void Shutdown() {
         surfaces.clear();
+        pendingPresentationTimes = {};
         outputType.Reset();
         transform.Reset();
         immediateContext.Reset();
@@ -558,14 +571,25 @@ struct MfH264Decoder::Impl {
             frame->color.chromaLocation = ChromaLocation::Left;
         LONGLONG time = 0;
         LONGLONG duration = 0;
-        if (SUCCEEDED(decoded->GetSampleTime(&time))) {
+        if (!mpeg4Part2 && !pendingPresentationTimes.empty()) {
+            time = pendingPresentationTimes.top().first;
+            duration = pendingPresentationTimes.top().second;
+            pendingPresentationTimes.pop();
             frame->pts = static_cast<double>(time) /
                          kHundredNanosecondsPerSecond;
-        }
-        if (SUCCEEDED(decoded->GetSampleDuration(&duration))) {
             frame->duration = static_cast<double>(duration) /
                               kHundredNanosecondsPerSecond;
-        } else if (track.frameRate.IsValid()) {
+        } else {
+            if (SUCCEEDED(decoded->GetSampleTime(&time))) {
+                frame->pts = static_cast<double>(time) /
+                             kHundredNanosecondsPerSecond;
+            }
+            if (SUCCEEDED(decoded->GetSampleDuration(&duration))) {
+                frame->duration = static_cast<double>(duration) /
+                                  kHundredNanosecondsPerSecond;
+            }
+        }
+        if (frame->duration <= 0.0 && track.frameRate.IsValid()) {
             frame->duration = track.frameRate.denominator /
                               static_cast<double>(track.frameRate.numerator);
         }
@@ -642,6 +666,11 @@ struct MfH264Decoder::Impl {
             hr = transform->ProcessInput(0, inputSample.Get(), 0);
         }
         if (FAILED(hr)) return Fail(HresultText(L"ProcessInput(H.264)", hr));
+        if (!mpeg4Part2) {
+            pendingPresentationTimes.emplace(
+                SecondsToMediaTime(encoded.PtsSeconds()),
+                SecondsToMediaTime(encoded.DurationSeconds()));
+        }
         if (!mpeg4Part2) parameterSetsPending = false;
         if (!DrainOutput(output)) return false;
         error.clear();
@@ -668,6 +697,7 @@ struct MfH264Decoder::Impl {
         if (FAILED(hr)) return Fail(HresultText(L"Restart H.264 stream", hr));
         parameterSetsPending = !mpeg4Part2;
         surfaces.clear();
+        pendingPresentationTimes = {};
         error.clear();
         return true;
     }

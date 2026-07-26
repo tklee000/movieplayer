@@ -1,4 +1,4 @@
-# MoviePlayer 0.3 Technical Guide
+# MoviePlayer 0.4 Technical Guide
 
 MoviePlayer is a native Windows x64 video player written in C++17. It combines
 a first-party media layer with selected Windows platform decoders, D3D11/DXVA

@@ -1,4 +1,4 @@
-# MoviePlayer 0.3
+# MoviePlayer 0.4
 
 MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
@@ -35,7 +35,8 @@ implementation ownership, acceleration requirements, and fallback matrix.
   and fixed/Xiph/EBML lacing for H.264/HEVC, AAC/Opus, and text/bitmap subtitle
   tracks; plus classic indexed RIFF AVI (`idx1`) for Xvid/DX50 and MP3.
 - Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
-  decoder with NV12 output, including the tested High Profile Level 4.2 title;
+  decoder with NV12 output, including B-frame MP4 streams without composition
+  offsets and the tested High Profile Level 4.2 title;
   and HEVC Main/Main10 4:2:0 streams matching the supplied x265 test title.
   Xvid/DX50 MPEG-4 Part 2 is decoded through Windows Media Foundation. Video
   surfaces are presented through the D3D11 video processor.

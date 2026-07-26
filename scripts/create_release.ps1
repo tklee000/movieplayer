@@ -1,15 +1,22 @@
 param(
-    [string]$Version = '0.3',
-    [switch]$SkipBuild
+    [string]$Version = '0.4',
+    [switch]$SkipBuild,
+    [string]$DeployDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..')).Path
 $Artifacts = Join-Path $Root 'artifacts'
 $Deploy = Join-Path $Root 'deploy'
+if (-not [string]::IsNullOrWhiteSpace($DeployDirectory)) {
+    $Deploy = [IO.Path]::GetFullPath((Join-Path $Root $DeployDirectory))
+    if (-not $Deploy.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to package a directory outside the project: $Deploy"
+    }
+}
 
-if ($Version -ne '0.3') {
-    throw "This source tree declares version 0.3; refusing to package version $Version."
+if ($Version -ne '0.4') {
+    throw "This source tree declares version 0.4; refusing to package version $Version."
 }
 
 if (-not $SkipBuild) {
