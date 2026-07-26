@@ -45,6 +45,7 @@ enum class CodecId {
     Aac,
     Mp3,
     Opus,
+    Flac,
     Ac3,
     Eac3,
     Dts,
@@ -102,6 +103,7 @@ struct TrackInfo {
     std::string language;
     std::string name;
     bool defaultTrack = true;
+    bool forcedTrack = false;
     std::uint32_t timeScale = 0;
     std::uint64_t durationTicks = 0;
     std::uint64_t sampleCount = 0;

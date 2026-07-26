@@ -1,4 +1,6 @@
 #include "codec/audio/aac/AacLcDecoder.h"
+#include "codec/audio/ac3/Ac3Decoder.h"
+#include "codec/audio/flac/FlacDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
@@ -109,9 +111,11 @@ int wmain(int argc, wchar_t** argv) {
         std::wcerr << L"usage: MovieCodecSmoke <input> [option]\n"
                       L"       MovieCodecSmoke [option] <input>\n"
                       L"options: --probe | --audio-track=N | "
+                      L"--subtitle-track=N | "
                       L"--subtitle-probe[=SECONDS] | "
                       L"--timeline-probe[=SAMPLES] | "
                       L"--frame-probe[=FRAMES] | "
+                      L"--end-probe | "
                       L"--dump-audio=OUTPUT.f32le\n";
         return 2;
     }
@@ -134,22 +138,27 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     std::uint32_t requestedAudioTrack = 0;
+    std::uint32_t requestedSubtitleTrack = 0;
     bool probeOnly = false;
     bool timelineProbeOnly = false;
     unsigned timelineProbeLimit = 120;
     bool frameProbeOnly = false;
     unsigned frameProbeLimit = 300;
+    bool endProbeOnly = false;
     bool subtitleProbeOnly = false;
     double subtitleProbeTime = 0.0;
     std::filesystem::path audioDumpPath;
     std::ofstream audioDump;
     if (!option.empty()) {
         constexpr wchar_t audioTrackPrefix[] = L"--audio-track=";
+        constexpr wchar_t subtitleTrackPrefix[] = L"--subtitle-track=";
         constexpr wchar_t audioDumpPrefix[] = L"--dump-audio=";
         constexpr wchar_t timelineProbePrefix[] = L"--timeline-probe=";
         constexpr wchar_t frameProbePrefix[] = L"--frame-probe=";
         if (option == L"--probe") {
             probeOnly = true;
+        } else if (option == L"--end-probe") {
+            endProbeOnly = true;
         } else if (option == L"--timeline-probe") {
             timelineProbeOnly = true;
         } else if (option.rfind(timelineProbePrefix, 0) == 0) {
@@ -195,6 +204,16 @@ int wmain(int argc, wchar_t** argv) {
                 std::wcerr << L"invalid audio track option\n";
                 return 2;
             }
+        } else if (option.rfind(subtitleTrackPrefix, 0) == 0) {
+            try {
+                requestedSubtitleTrack = static_cast<std::uint32_t>(
+                    std::stoul(
+                        option.substr(std::size(subtitleTrackPrefix) - 1U)));
+                subtitleProbeOnly = true;
+            } catch (const std::exception&) {
+                std::wcerr << L"invalid subtitle track option\n";
+                return 2;
+            }
         } else if (option.rfind(audioDumpPrefix, 0) == 0) {
             audioDumpPath =
                 option.substr(std::size(audioDumpPrefix) - 1U);
@@ -238,11 +257,16 @@ int wmain(int argc, wchar_t** argv) {
                        << L" fps=" << track.frameRate.ToDouble();
         } else if (track.type == TrackType::Audio) {
             std::wcout << L" rate=" << track.sampleRate
-                       << L" channels=" << track.channels;
+                       << L" channels=" << track.channels
+                       << L" bits=" << track.bitsPerSample
+                       << L" private=" << track.codecPrivate.size();
         } else if (track.type == TrackType::Subtitle) {
             std::wcout << L" language="
                        << std::wstring(track.language.begin(), track.language.end())
-                       << L" default=" << (track.defaultTrack ? 1 : 0);
+                       << L" name="
+                       << std::wstring(track.name.begin(), track.name.end())
+                       << L" default=" << (track.defaultTrack ? 1 : 0)
+                       << L" forced=" << (track.forcedTrack ? 1 : 0);
         }
         std::wcout << L"\n";
         if (!videoTrack &&
@@ -250,7 +274,8 @@ int wmain(int argc, wchar_t** argv) {
              track.codec == CodecId::Mpeg4Part2))
             videoTrack = &track;
         if ((track.codec == CodecId::Aac || track.codec == CodecId::Mp3 ||
-             track.codec == CodecId::Opus) &&
+             track.codec == CodecId::Opus || track.codec == CodecId::Flac ||
+             track.codec == CodecId::Ac3) &&
             ((!audioTrack && requestedAudioTrack == 0) ||
              track.trackId == requestedAudioTrack)) {
             audioTrack = &track;
@@ -258,7 +283,13 @@ int wmain(int argc, wchar_t** argv) {
         if (track.type == TrackType::Subtitle &&
             (track.codec == CodecId::Ass || track.codec == CodecId::SubRip ||
              track.codec == CodecId::VobSub) &&
-            (!subtitleTrack || track.defaultTrack)) {
+            ((requestedSubtitleTrack != 0 &&
+              track.trackId == requestedSubtitleTrack) ||
+             (requestedSubtitleTrack == 0 &&
+              (!subtitleTrack ||
+               (track.defaultTrack && !subtitleTrack->defaultTrack) ||
+               (track.defaultTrack == subtitleTrack->defaultTrack &&
+                !track.forcedTrack && subtitleTrack->forcedTrack))))) {
             subtitleTrack = &track;
         }
     }
@@ -413,7 +444,8 @@ int wmain(int argc, wchar_t** argv) {
             }
             std::wcout << L"subtitle-ok track=" << subtitleTrack->trackId
                        << L" pts=" << sample.PtsSeconds() << L" length="
-                       << text.size() << L"\n";
+                       << text.size() << L" duration="
+                       << sample.DurationSeconds() << L"\n";
             return text.empty() ? 21 : 0;
         }
         std::wcerr << L"no subtitle sample was found\n";
@@ -447,11 +479,92 @@ int wmain(int argc, wchar_t** argv) {
         return 6;
     }
     std::wcout << L"decoder: " << video->Description() << L"\n";
+    if (endProbeOnly) {
+        for (const TrackInfo& track : demuxer->Tracks()) {
+            demuxer->SetTrackEnabled(track.trackId,
+                                     track.trackId == videoTrack->trackId);
+        }
+        const double target =
+            std::max(0.0, demuxer->DurationSeconds() - 20.0);
+        double decodeStart = 0.0;
+        if (!demuxer->Seek(target, decodeStart) || !video->Reset()) {
+            std::wcerr << L"end probe seek/reset failed: "
+                       << demuxer->LastError() << L"\n";
+            return 24;
+        }
+
+        std::deque<std::shared_ptr<VideoFrame>> retainedFrames;
+        unsigned decodedFrames = 0;
+        unsigned flushedFrames = 0;
+        const auto retain = [&](const std::shared_ptr<VideoFrame>& frame) {
+            if (!frame || !frame->texture) return false;
+            retainedFrames.push_back(frame);
+            while (retainedFrames.size() > 9U) retainedFrames.pop_front();
+            return true;
+        };
+
+        for (;;) {
+            EncodedSample sample;
+            bool eof = false;
+            if (!demuxer->ReadNextSample(sample, eof)) {
+                std::wcerr << L"end probe demux failed: "
+                           << demuxer->LastError() << L"\n";
+                return 25;
+            }
+            if (eof) break;
+            if (sample.trackId != videoTrack->trackId) continue;
+            std::vector<std::shared_ptr<VideoFrame>> frames;
+            if (!video->Decode(sample, frames)) {
+                std::wcerr << L"end probe decode failed: "
+                           << video->LastError() << L"\n";
+                return 26;
+            }
+            for (const auto& frame : frames) {
+                if (!retain(frame)) {
+                    std::wcerr << L"end probe received an invalid frame\n";
+                    return 26;
+                }
+                ++decodedFrames;
+            }
+        }
+
+        unsigned flushBatches = 0;
+        for (; flushBatches < 64U; ++flushBatches) {
+            std::vector<std::shared_ptr<VideoFrame>> frames;
+            if (!video->Flush(frames)) {
+                std::wcerr << L"end probe flush failed: "
+                           << video->LastError() << L"\n";
+                return 27;
+            }
+            if (frames.empty()) {
+                std::wcout << L"end-probe-ok target=" << target
+                           << L" decode-start=" << decodeStart
+                           << L" decoded=" << decodedFrames
+                           << L" flushed=" << flushedFrames
+                           << L" batches=" << flushBatches << L"\n";
+                return decodedFrames != 0 ? 0 : 28;
+            }
+            for (const auto& frame : frames) {
+                if (!retain(frame)) {
+                    std::wcerr << L"end probe flush returned an invalid frame\n";
+                    return 27;
+                }
+                ++flushedFrames;
+            }
+        }
+        std::wcerr << L"end probe did not finish draining the decoder\n";
+        return 27;
+    }
+
     std::unique_ptr<IAudioDecoder> audio;
     if (audioTrack->codec == CodecId::Mp3)
         audio = std::make_unique<mp3::MfMp3Decoder>();
     else if (audioTrack->codec == CodecId::Opus)
         audio = std::make_unique<opus::OpusDecoder>();
+    else if (audioTrack->codec == CodecId::Flac)
+        audio = std::make_unique<flac::FlacDecoder>();
+    else if (audioTrack->codec == CodecId::Ac3)
+        audio = std::make_unique<ac3::Ac3Decoder>();
     else
         audio = std::make_unique<aac::AacLcDecoder>();
     if (!audio->Initialize(*audioTrack)) {

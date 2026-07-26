@@ -78,6 +78,7 @@ status.always_on_top_off=Immer im Vordergrund deaktiviert
 status.rtx_on=NVIDIA RTX Video KI-Skalierung aktiviert
 status.rtx_off=NVIDIA RTX Video KI-Skalierung deaktiviert
 status.subtitle=Untertitel
+status.subtitle_showing=wird angezeigt
 status.whisper_starting=Automatische Untertitel werden vorbereitet...
 status.whisper_progress=Automatische Untertitel werden generiert {progress}%
 status.whisper_canceled=Automatische Untertitelgenerierung abgebrochen

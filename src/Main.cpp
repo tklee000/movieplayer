@@ -69,7 +69,9 @@ constexpr DWORD kDwmTextColor = 36;
 bool IsSupportedAudioCodec(movieplayer::codec::CodecId codec) {
     return codec == movieplayer::codec::CodecId::Aac ||
            codec == movieplayer::codec::CodecId::Mp3 ||
-           codec == movieplayer::codec::CodecId::Opus;
+           codec == movieplayer::codec::CodecId::Opus ||
+           codec == movieplayer::codec::CodecId::Flac ||
+           codec == movieplayer::codec::CodecId::Ac3;
 }
 
 const wchar_t* AudioCodecLabel(movieplayer::codec::CodecId codec) {
@@ -80,6 +82,8 @@ const wchar_t* AudioCodecLabel(movieplayer::codec::CodecId codec) {
         return L"MP3";
     case movieplayer::codec::CodecId::Opus:
         return L"Opus";
+    case movieplayer::codec::CodecId::Flac:
+        return L"FLAC";
     case movieplayer::codec::CodecId::Ac3:
         return L"AC-3";
     case movieplayer::codec::CodecId::Eac3:
@@ -979,6 +983,9 @@ private:
         }
         if (track.defaultTrack) {
             label += L" [" + Localization::Text("menu.track.default") + L"]";
+        }
+        if (track.forcedTrack && name.find(L"Forced") == std::wstring::npos) {
+            label += L" [Forced]";
         }
         return label;
     }

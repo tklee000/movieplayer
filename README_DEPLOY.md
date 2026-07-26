@@ -26,9 +26,10 @@ bit depth, container combination, or optional feature in those standards.
 Unusual files can be unsupported, and HEVC Main/Main10 requires a compatible
 Windows hardware decoder.
 
-Matroska `A_OPUS` mono and stereo tracks are decoded at 48 kHz. AC-3, E-AC-3,
-and DTS tracks appear in the audio-track menu as `[Not Support]`; no decoder or
-codec library for those formats is included in this package.
+Matroska `A_OPUS` mono and stereo tracks are decoded at 48 kHz. Matroska FLAC
+and AC-3 tracks are decoded by the built-in C++ decoders and delivered or mixed
+to stereo. E-AC-3 and DTS tracks appear in the audio-track menu as
+`[Not Support]`; no decoder for those formats is included in this package.
 
 ## Optional AI subtitles
 

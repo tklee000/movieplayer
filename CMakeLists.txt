@@ -184,6 +184,10 @@ add_library(MovieCodecAudio STATIC
     src/codec/audio/aac/AacHuffman.h
     src/codec/audio/aac/AacLcDecoder.cpp
     src/codec/audio/aac/AacLcDecoder.h
+    src/codec/audio/ac3/Ac3Decoder.cpp
+    src/codec/audio/ac3/Ac3Decoder.h
+    src/codec/audio/flac/FlacDecoder.cpp
+    src/codec/audio/flac/FlacDecoder.h
     src/codec/audio/mp3/MfMp3Decoder.cpp
     src/codec/audio/mp3/MfMp3Decoder.h
     src/codec/audio/opus/OpusDecoder.cpp

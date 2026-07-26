@@ -3,6 +3,8 @@
 #include "AudioOutput.h"
 #include "Localization.h"
 #include "codec/audio/aac/AacLcDecoder.h"
+#include "codec/audio/ac3/Ac3Decoder.h"
+#include "codec/audio/flac/FlacDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
@@ -36,7 +38,42 @@ namespace {
 
 bool IsSupportedAudioCodec(CodecId codec) {
     return codec == CodecId::Aac || codec == CodecId::Mp3 ||
-           codec == CodecId::Opus;
+           codec == CodecId::Opus || codec == CodecId::Flac ||
+           codec == CodecId::Ac3;
+}
+
+bool SubtitleLanguageMatchesUi(const std::string& language) {
+    std::string code = language;
+    std::transform(code.begin(), code.end(), code.begin(), [](char value) {
+        return value >= 'A' && value <= 'Z'
+                   ? static_cast<char>(value - 'A' + 'a')
+                   : value;
+    });
+    const std::size_t separator = code.find_first_of("-_");
+    if (separator != std::string::npos) code.resize(separator);
+
+    const std::wstring ui = Localization::CurrentLanguage();
+    if (ui == L"en") return code == "en" || code == "eng";
+    if (ui == L"ja") return code == "ja" || code == "jpn";
+    if (ui == L"ko") return code == "ko" || code == "kor";
+    if (ui == L"fr") return code == "fr" || code == "fra" || code == "fre";
+    if (ui == L"de") return code == "de" || code == "deu" || code == "ger";
+    if (ui == L"es") return code == "es" || code == "spa";
+    if (ui == L"pt") return code == "pt" || code == "por";
+    if (ui == L"hi") return code == "hi" || code == "hin";
+    if (ui == L"id") return code == "id" || code == "ind";
+    if (ui == L"ar") return code == "ar" || code == "ara";
+    if (ui == L"zh-CN" || ui == L"zh-TW")
+        return code == "zh" || code == "zho" || code == "chi";
+    return false;
+}
+
+int SubtitlePreference(const TrackInfo& track) {
+    int score = 0;
+    if (track.defaultTrack) score += 1000;
+    if (SubtitleLanguageMatchesUi(track.language)) score += 100;
+    if (!track.forcedTrack) score += 10;
+    return score;
 }
 
 class PacketQueue {
@@ -294,8 +331,13 @@ struct PlayerEngine::Impl {
             const wchar_t* audioName =
                 audioTrack.codec == CodecId::Mp3
                     ? L"MP3 "
-                    : (audioTrack.codec == CodecId::Opus ? L"Opus "
-                                                          : L"AAC-LC ");
+                    : (audioTrack.codec == CodecId::Opus
+                           ? L"Opus "
+                           : (audioTrack.codec == CodecId::Flac
+                                  ? L"FLAC "
+                                  : (audioTrack.codec == CodecId::Ac3
+                                         ? L"AC-3 "
+                                         : L"AAC-LC ")));
             out << L"  ·  "
                 << audioName
                 << audioTrack.sampleRate << L" Hz "
@@ -315,6 +357,12 @@ struct PlayerEngine::Impl {
         } else if (track.codec == CodecId::Opus) {
             decoder =
                 std::make_unique<movieplayer::codec::opus::OpusDecoder>();
+        } else if (track.codec == CodecId::Flac) {
+            decoder =
+                std::make_unique<movieplayer::codec::flac::FlacDecoder>();
+        } else if (track.codec == CodecId::Ac3) {
+            decoder =
+                std::make_unique<movieplayer::codec::ac3::Ac3Decoder>();
         } else {
             failure = L"The selected audio codec is not supported";
             return nullptr;
@@ -364,7 +412,7 @@ struct PlayerEngine::Impl {
         audioTracks.clear();
         subtitleTracks.clear();
         bool selectedDefaultAudio = false;
-        bool selectedDefaultSubtitle = false;
+        int selectedSubtitlePreference = (std::numeric_limits<int>::min)();
         for (const TrackInfo& track : demuxer->Tracks()) {
             if (!foundVideo && track.type == TrackType::Video &&
                 (track.codec == CodecId::H264 || track.codec == CodecId::Hevc ||
@@ -376,11 +424,12 @@ struct PlayerEngine::Impl {
                         track.codec == CodecId::Ass ||
                         track.codec == CodecId::VobSub)) {
                 subtitleTracks.push_back(track);
+                const int preference = SubtitlePreference(track);
                 if (!hasEmbeddedSubtitle ||
-                    (track.defaultTrack && !selectedDefaultSubtitle)) {
+                    preference > selectedSubtitlePreference) {
                     subtitleTrack = track;
                     hasEmbeddedSubtitle = true;
-                    if (track.defaultTrack) selectedDefaultSubtitle = true;
+                    selectedSubtitlePreference = preference;
                 }
             } else if (track.type == TrackType::Audio) {
                 audioTracks.push_back(track);
@@ -613,10 +662,12 @@ struct PlayerEngine::Impl {
         bool eof = false;
         while (!abort.load() && videoPackets.Pop(sample, eof)) {
             std::vector<std::shared_ptr<DecodedVideoFrame>> decoded;
+            bool flushFailed = false;
             if (eof) {
                 if (!videoDecoder->Flush(decoded) && !abort.load()) {
                     SetAsyncError(Localization::Format(
                         "error.video_decode", {{L"error", videoDecoder->LastError()}}));
+                    flushFailed = true;
                 }
             } else if (!videoDecoder->Decode(sample, decoded)) {
                 if (!abort.load()) {
@@ -629,7 +680,10 @@ struct PlayerEngine::Impl {
                 if (frame->pts + frame->duration < seekFloor.load() - 0.010) continue;
                 if (!videoFrames.Push(std::move(frame))) break;
             }
-            if (eof) break;
+            // H.264 EOF drain is intentionally batched so delayed pictures
+            // can enter the bounded playback queue before their textures are
+            // reused. An empty batch marks the completed drain.
+            if (eof && (decoded.empty() || flushFailed)) break;
         }
         if (!abort.load()) videoFinished.store(true);
         if (SUCCEEDED(comResult)) CoUninitialize();

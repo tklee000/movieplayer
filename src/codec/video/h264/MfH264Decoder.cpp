@@ -32,6 +32,11 @@ constexpr LONGLONG kHundredNanosecondsPerSecond = 10'000'000;
 // pictures before that batch reaches the playback queue, so twelve surfaces
 // are not sufficient even for the focused High@4.2 stream.
 constexpr std::size_t kMaximumSurfaces = 32;
+// End-of-stream drain can expose many delayed pictures at once. Return them
+// in queue-sized batches so callers can release or present each batch before
+// the decoder needs another set of upload textures.
+constexpr unsigned kFlushBatchSize = 8;
+constexpr unsigned kMaximumDrainIterations = 64;
 
 std::wstring HresultText(const wchar_t* operation, HRESULT result) {
     std::wostringstream out;
@@ -94,6 +99,8 @@ struct MfH264Decoder::Impl {
     DWORD outputBufferSize = 0;
     bool parameterSetsPending = true;
     bool mpeg4Part2 = false;
+    bool drainStarted = false;
+    bool drainComplete = false;
     bool mediaFoundationStarted = false;
     bool comInitialized = false;
 
@@ -122,6 +129,8 @@ struct MfH264Decoder::Impl {
         outputWidth = outputHeight = 0;
         outputStride = 0;
         outputStreamFlags = outputBufferSize = 0;
+        drainStarted = false;
+        drainComplete = false;
     }
 
     bool ParseConfiguration(const std::vector<std::uint8_t>& configuration) {
@@ -598,8 +607,12 @@ struct MfH264Decoder::Impl {
         return true;
     }
 
-    bool DrainOutput(std::vector<std::shared_ptr<VideoFrame>>& output) {
-        for (unsigned iteration = 0; iteration < 64; ++iteration) {
+    bool DrainOutput(std::vector<std::shared_ptr<VideoFrame>>& output,
+                     unsigned maximumFrames = kMaximumDrainIterations,
+                     bool allowPartial = false,
+                     bool* streamDrained = nullptr) {
+        if (streamDrained) *streamDrained = false;
+        for (unsigned iteration = 0; iteration < maximumFrames; ++iteration) {
             MFT_OUTPUT_DATA_BUFFER outputBuffer = {};
             outputBuffer.dwStreamID = 0;
             ComPtr<IMFSample> suppliedSample;
@@ -630,7 +643,10 @@ struct MfH264Decoder::Impl {
             } else {
                 decoded = suppliedSample;
             }
-            if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return true;
+            if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+                if (streamDrained) *streamDrained = true;
+                return true;
+            }
             if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
                 if (!ConfigureOutputType()) return false;
                 continue;
@@ -639,6 +655,7 @@ struct MfH264Decoder::Impl {
             if (!decoded) return Fail(L"The H.264 decoder produced no output sample");
             if (!MakeFrame(decoded.Get(), output)) return false;
         }
+        if (allowPartial) return true;
         return Fail(L"The H.264 decoder produced too many frames for one input sample");
     }
 
@@ -680,11 +697,25 @@ struct MfH264Decoder::Impl {
     bool Flush(std::vector<std::shared_ptr<VideoFrame>>& output) {
         output.clear();
         if (!transform) return Fail(L"The H.264 decoder is not initialized");
-        HRESULT hr = transform->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-        if (FAILED(hr)) return Fail(HresultText(L"End H.264 stream", hr));
-        hr = transform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
-        if (FAILED(hr)) return Fail(HresultText(L"Drain H.264 stream", hr));
-        if (!DrainOutput(output)) return false;
+        if (drainComplete) {
+            error.clear();
+            return true;
+        }
+        if (!drainStarted) {
+            HRESULT hr =
+                transform->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+            if (FAILED(hr)) return Fail(HresultText(L"End H.264 stream", hr));
+            hr = transform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+            if (FAILED(hr)) return Fail(HresultText(L"Drain H.264 stream", hr));
+            drainStarted = true;
+        }
+        bool streamDrained = false;
+        if (!DrainOutput(output, kFlushBatchSize, true, &streamDrained))
+            return false;
+        if (streamDrained) {
+            drainStarted = false;
+            drainComplete = true;
+        }
         error.clear();
         return true;
     }
@@ -698,6 +729,8 @@ struct MfH264Decoder::Impl {
         parameterSetsPending = !mpeg4Part2;
         surfaces.clear();
         pendingPresentationTimes = {};
+        drainStarted = false;
+        drainComplete = false;
         error.clear();
         return true;
     }

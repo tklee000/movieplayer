@@ -78,6 +78,7 @@ status.always_on_top_off=Always on top disabled
 status.rtx_on=NVIDIA RTX Video AI upscaling enabled
 status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=Subtitle
+status.subtitle_showing=showing
 status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=Generating automatic English subtitles {progress}%
 status.whisper_canceled=Automatic English subtitle generation canceled

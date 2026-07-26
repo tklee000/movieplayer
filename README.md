@@ -4,14 +4,14 @@ MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
 The repository contains the container
 parsers, sample indexing and seeking, codec interfaces, HEVC bitstream and
-DXVA submission code, AAC-LC decoder, libopus-backed Opus playback, channel
-mixer, subtitle parsers, and subtitle-audio resampler.
+DXVA submission code, AAC-LC, FLAC, and AC-3 decoders, libopus-backed Opus
+playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 
 ## Implementation boundary
 
 | Layer | MoviePlayer uses it for |
 |---|---|
-| First-party C/C++ | MP4/MKV/AVI parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
+| First-party C/C++ | MP4/MKV/AVI parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows Media Foundation | H.264 and MPEG-4 Part 2 video decoding, plus MP3 audio decoding |
 | D3D11, DXVA, DXGI, and XAudio2 | Hardware video decode services, GPU video processing and presentation, software-rendering fallback, and audio output |
@@ -32,8 +32,9 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Container: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
   decode/composition timing, sync samples, `avcC`, `hvcC`, and `esds`; plus
   focused Matroska/MKV playback with `SeekHead`, `Cues`, clusters, block groups,
-  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC/Opus, and text/bitmap subtitle
-  tracks; plus classic indexed RIFF AVI (`idx1`) for Xvid/DX50 and MP3.
+  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC/Opus/FLAC/AC-3, and
+  text/bitmap subtitle tracks; plus classic indexed RIFF AVI (`idx1`) for
+  Xvid/DX50 and MP3.
 - Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
   decoder with NV12 output, including B-frame MP4 streams without composition
   offsets and the tested High Profile Level 4.2 title;
@@ -45,8 +46,11 @@ implementation ownership, acceleration requirements, and fallback matrix.
   stereo tools, TNS, IMDCT/window overlap, native stereo playback,
   5.1-to-stereo mixing, PCE 7.1-to-stereo mixing, and XAudio2; Matroska
   mono/stereo Opus through the BSD-licensed libopus 1.5.2 decoder; plus Windows
-  Media Foundation MP3 decoding for AVI. Matroska AC-3, E-AC-3, and DTS tracks
-  are listed in the audio-track menu as `[Not Support]` and are not decoded.
+  Media Foundation MP3 decoding for AVI; first-party Matroska FLAC decoding
+  for 4- through 32-bit streams with up to eight channels and stereo output;
+  and first-party Matroska AC-3 decoding with mono through 5.1 input and stereo
+  downmix. E-AC-3 and DTS tracks are listed in the audio-track menu as
+  `[Not Support]` and are not decoded.
 - Seeking: MP4 sync-sample, MKV cue, and AVI keyframe-index seek with decoder
   and audio-clock reset.
 - Subtitles: external SRT, ASS/SSA, and SMI display; Matroska embedded
@@ -63,7 +67,8 @@ combination, or optional bitstream feature in those standards. Unsupported or
 unusual files may fail to open or decode. A compatible Windows hardware HEVC
 Main or Main10 decoder is required for HEVC playback; H.264 uses the Windows
 Media Foundation decoder and requests DXVA acceleration when available. The
-native AAC-LC decoder is similarly scoped to the formats listed above.
+native AAC-LC, FLAC, and AC-3 decoders are similarly scoped to the formats
+listed above.
 
 ## Codec layout
 
@@ -78,6 +83,8 @@ src/codec/
   audio/
     AudioDecoder.h       audio decoder interface
     aac/                 AAC-LC decoder and standard Huffman tables
+    ac3/                 first-party ATSC A/52 AC-3 decoder
+    flac/                first-party IETF RFC 9639 FLAC decoder
     mp3/                 Windows Media Foundation MP3 backend
     opus/                libopus-backed Matroska Opus decoder
   subtitle/              embedded UTF-8/ASS text decoder

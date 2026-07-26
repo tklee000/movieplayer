@@ -78,6 +78,7 @@ status.always_on_top_off=Always on top disabled
 status.rtx_on=NVIDIA RTX Video AI upscaling enabled
 status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=Legenda
+status.subtitle_showing=em exibição
 status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=Gerando legendas automáticas em português {progress}%
 status.whisper_canceled=Geração automática de legendas em português cancelada

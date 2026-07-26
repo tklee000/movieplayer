@@ -327,6 +327,7 @@ struct MkvDemuxer::Impl {
         Track track;
         std::uint64_t trackType = 0;
         std::string codecId;
+        std::string languageIetf;
         std::size_t position = 0;
         MemoryElement child;
         while (NextElement(entry.data, entry.size, position, child)) {
@@ -340,6 +341,10 @@ struct MkvDemuxer::Impl {
             else if (child.id == 0x88)
                 track.defaultTrack = ReadBigEndian(child.data, child.size) != 0;
             else if (child.id == 0x22b59c) track.info.language = ReadString(child);
+            else if (child.id == 0x22b59d) languageIetf = ReadString(child);
+            else if (child.id == 0x55aa)
+                track.info.forcedTrack =
+                    ReadBigEndian(child.data, child.size) != 0;
             else if (child.id == 0x536e) track.info.name = ReadString(child);
             else if (child.id == 0xe0) ParseVideo(child, track);
             else if (child.id == 0xe1) ParseAudio(child, track);
@@ -355,6 +360,7 @@ struct MkvDemuxer::Impl {
             std::max(0.0, durationSeconds) * kTimeScale);
         track.info.sampleEntry = codecId;
         track.info.defaultTrack = track.defaultTrack;
+        if (!languageIetf.empty()) track.info.language = std::move(languageIetf);
         if (trackType == 1) {
             track.info.type = TrackType::Video;
             if (codecId == "V_MPEGH/ISO/HEVC") track.info.codec = CodecId::Hevc;
@@ -373,6 +379,8 @@ struct MkvDemuxer::Impl {
                 track.info.codec = CodecId::Opus;
                 // Matroska Opus output is always timestamped at 48 kHz.
                 track.info.sampleRate = 48'000;
+            } else if (codecId == "A_FLAC") {
+                track.info.codec = CodecId::Flac;
             } else if (codecId == "A_AC3") {
                 track.info.codec = CodecId::Ac3;
             } else if (codecId == "A_EAC3") {
@@ -754,6 +762,15 @@ struct MkvDemuxer::Impl {
                                                 return track.info.type == TrackType::Audio;
                                             });
             if (found != tracks.end()) selectedAudio = &*found;
+        }
+        if (!selectedSubtitle) {
+            const auto found = std::find_if(tracks.begin(), tracks.end(),
+                                            [](const Track& track) {
+                                                return track.info.type ==
+                                                           TrackType::Subtitle &&
+                                                       !track.info.forcedTrack;
+                                            });
+            if (found != tracks.end()) selectedSubtitle = &*found;
         }
         if (!selectedSubtitle) {
             const auto found = std::find_if(tracks.begin(), tracks.end(),

@@ -78,6 +78,7 @@ status.always_on_top_off=항상 위 꺼짐
 status.rtx_on=NVIDIA RTX Video AI 업스케일링 켜짐
 status.rtx_off=NVIDIA RTX Video AI 업스케일링 꺼짐
 status.subtitle=자막
+status.subtitle_showing=표시 중
 status.whisper_starting=자동 자막 생성을 준비하고 있습니다...
 status.whisper_progress=자동 자막 생성 중 {progress}%
 status.whisper_canceled=자동 자막 생성이 취소되었습니다

@@ -78,6 +78,7 @@ status.always_on_top_off=Always on top disabled
 status.rtx_on=NVIDIA RTX Video AI upscaling enabled
 status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=字幕
+status.subtitle_showing=顯示中
 status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=正在自動產生繁體中文字幕 {progress}%
 status.whisper_canceled=已取消繁體中文字幕自動產生

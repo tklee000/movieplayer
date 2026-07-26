@@ -78,6 +78,7 @@ status.always_on_top_off=Always on top disabled
 status.rtx_on=NVIDIA RTX Video AI upscaling enabled
 status.rtx_off=NVIDIA RTX Video AI upscaling disabled
 status.subtitle=उपशीर्षक
+status.subtitle_showing=दिख रहा है
 status.whisper_starting=Preparing automatic English subtitles...
 status.whisper_progress=स्वचालित हिन्दी उपशीर्षक बनाए जा रहे हैं {progress}%
 status.whisper_canceled=स्वचालित हिन्दी उपशीर्षक बनाना रद्द हुआ

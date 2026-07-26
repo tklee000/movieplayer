@@ -14,7 +14,7 @@ The implementation is deliberately split into three clearly defined areas:
 
 | Area | Responsibility |
 |---|---|
-| First-party MoviePlayer code | MP4/MKV/AVI parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
+| First-party MoviePlayer code | MP4/MKV/AVI parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows platform components | H.264, MPEG-4 Part 2, and MP3 decode transforms; D3D11 devices, DXVA decode services, video processing, DXGI presentation, XAudio2 output, and WARP rendering fallback |
 | Optional components | NVIDIA RTX Video VSR, whisper.cpp speech recognition, CTranslate2 translation, and SentencePiece tokenization |
@@ -30,14 +30,14 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Operating system | Windows 10 or 11 x64, per-monitor V2 DPI, Unicode, and long-path-aware file handling |
 | Containers | Non-fragmented MP4, focused Matroska/MKV, and classic indexed RIFF AVI |
 | Video | H.264, HEVC Main/Main10 4:2:0 for the supported DXVA paths, and Xvid/DX50 MPEG-4 Part 2 |
-| Audio | AAC-LC at 24, 44.1, or 48 kHz; stereo, 5.1, and PCE 7.1 downmix paths; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
+| Audio | AAC-LC at 24, 44.1, or 48 kHz; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MKV with mono through 5.1 input; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
 | Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
 | Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 
-Matroska AC-3, E-AC-3, and DTS tracks are retained in the audio-track list and
-shown as `[Not Support]`, but MoviePlayer does not decode or select them.
+Matroska E-AC-3 and DTS tracks are retained in the audio-track list and shown
+as `[Not Support]`, but MoviePlayer does not decode or select them.
 
 These are focused playback implementations for ordinary consumer files, not
 complete implementations of every profile, level, chroma format, bit depth,
@@ -60,9 +60,13 @@ flowchart LR
     I --> J["DXGI swap chain"]
     B --> K{"Audio codec"}
     K -->|"AAC-LC"| L["First-party AAC decoder, mixer, and resampler"]
+    K -->|"FLAC"| Q["First-party lossless FLAC decoder"]
+    K -->|"AC-3"| P["First-party AC-3 decoder and stereo downmix"]
     K -->|"MP3"| M["Windows Media Foundation MP3 decoder"]
     K -->|"Opus"| O["BSD-licensed libopus decoder"]
     L --> N["XAudio2 and audio master clock"]
+    Q --> N
+    P --> N
     M --> N
     O --> N
 ```
