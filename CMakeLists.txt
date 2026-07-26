@@ -4,7 +4,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-project(MoviePlayer VERSION 0.4.0.0 LANGUAGES C CXX RC)
+project(MoviePlayer VERSION 0.5.0.0 LANGUAGES C CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "MoviePlayer is a native Win32 application and must be built on Windows.")
@@ -188,13 +188,15 @@ add_library(MovieCodecAudio STATIC
     src/codec/audio/ac3/Ac3Decoder.h
     src/codec/audio/flac/FlacDecoder.cpp
     src/codec/audio/flac/FlacDecoder.h
+    src/codec/audio/directshow/DirectShowAudioDecoder.cpp
+    src/codec/audio/directshow/DirectShowAudioDecoder.h
     src/codec/audio/mp3/MfMp3Decoder.cpp
     src/codec/audio/mp3/MfMp3Decoder.h
     src/codec/audio/opus/OpusDecoder.cpp
     src/codec/audio/opus/OpusDecoder.h
 )
 target_link_libraries(MovieCodecAudio PUBLIC MovieCodecCore mfplat mfuuid
-    wmcodecdspuuid ole32 Opus::opus)
+    wmcodecdspuuid ole32 strmiids Opus::opus)
 
 add_library(MovieCodecVideo STATIC
     src/codec/video/VideoDecoder.h

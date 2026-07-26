@@ -25,6 +25,7 @@ constexpr unsigned kCoefficientCount = 256;
 constexpr unsigned kCouplingSubbands = 18;
 constexpr unsigned kBitAllocationBands = 50;
 constexpr double kDitherScale = 0.7071067811865475244;
+constexpr std::array<std::uint8_t, 2> kSyncWord = {0x0b, 0x77};
 
 constexpr std::array<int, 3> kSampleRates = {48'000, 44'100, 32'000};
 constexpr std::array<int, 19> kBitRates = {
@@ -686,6 +687,11 @@ struct Ac3Decoder::Impl {
     TrackInfo track;
     std::array<std::array<double, kBlockSamples>, kMaximumChannels> overlap{};
     std::uint32_t ditherState = 0x12345678U;
+    std::vector<std::uint8_t> pendingBytes;
+    double pendingPts = 0.0;
+    std::uint32_t averageBytesPerSecond = 0;
+    bool pendingTimestamp = false;
+    bool chunkedWaveInput = false;
     std::wstring description;
     std::wstring error;
 
@@ -1425,7 +1431,7 @@ struct Ac3Decoder::Impl {
         return true;
     }
 
-    bool Decode(const EncodedSample& sample, AudioFrame& output) {
+    bool DecodeFrame(const EncodedSample& sample, AudioFrame& output) {
         if (track.trackId == 0)
             return Fail(L"The AC-3 decoder is not initialized");
         if (sample.trackId != track.trackId)
@@ -1438,13 +1444,13 @@ struct Ac3Decoder::Impl {
         if (!ParseHeader(bits, sample, frame)) return false;
         if (track.sampleRate > 0 &&
             track.sampleRate != kSampleRates[frame.sampleRateCode]) {
-            return Fail(L"The Matroska and AC-3 sample rates do not match");
+            return Fail(L"The container and AC-3 sample rates do not match");
         }
         if (track.channels > 0 &&
             track.channels !=
                 static_cast<int>(frame.fullBandwidthChannels +
                                  (frame.lfeOn ? 1U : 0U))) {
-            return Fail(L"The Matroska and AC-3 channel counts do not match");
+            return Fail(L"The container and AC-3 channel counts do not match");
         }
 
         output = {};
@@ -1469,9 +1475,115 @@ struct Ac3Decoder::Impl {
         return true;
     }
 
+    double SecondsForBytes(std::size_t bytes) const {
+        return averageBytesPerSecond != 0
+                   ? static_cast<double>(bytes) /
+                         static_cast<double>(averageBytesPerSecond)
+                   : 0.0;
+    }
+
+    bool DecodeChunk(const EncodedSample& sample, AudioFrame& output) {
+        if (track.trackId == 0)
+            return Fail(L"The AC-3 decoder is not initialized");
+        if (sample.trackId != track.trackId)
+            return Fail(L"Ac3Decoder received a sample for the wrong track");
+        if (sample.bytes.empty())
+            return Fail(L"The AC-3 packet is empty");
+
+        if (!pendingTimestamp) {
+            pendingPts = sample.PtsSeconds();
+            pendingTimestamp = true;
+        }
+        pendingBytes.insert(pendingBytes.end(), sample.bytes.begin(),
+                            sample.bytes.end());
+        output = {};
+
+        for (;;) {
+            const auto sync = std::search(
+                pendingBytes.begin(), pendingBytes.end(),
+                kSyncWord.begin(), kSyncWord.end());
+            if (sync == pendingBytes.end()) {
+                // Preserve a trailing 0x0b because the 0x77 half of the sync
+                // word can arrive in the next AVI chunk.
+                const bool keepPrefix =
+                    !pendingBytes.empty() && pendingBytes.back() == 0x0b;
+                const std::size_t discarded =
+                    pendingBytes.size() - (keepPrefix ? 1U : 0U);
+                pendingPts += SecondsForBytes(discarded);
+                if (keepPrefix) {
+                    pendingBytes.erase(pendingBytes.begin(),
+                                       pendingBytes.end() - 1);
+                } else {
+                    pendingBytes.clear();
+                }
+                error.clear();
+                return true;
+            }
+
+            const std::size_t skipped =
+                static_cast<std::size_t>(sync - pendingBytes.begin());
+            if (skipped != 0) {
+                pendingBytes.erase(pendingBytes.begin(), sync);
+                pendingPts += SecondsForBytes(skipped);
+            }
+            if (pendingBytes.size() < 5U) {
+                error.clear();
+                return true;
+            }
+
+            const unsigned sampleRateCode = pendingBytes[4] >> 6U;
+            const unsigned frameSizeCode = pendingBytes[4] & 0x3fU;
+            const int frameWords =
+                FrameSizeWords(sampleRateCode, frameSizeCode);
+            if (frameWords <= 0) {
+                pendingBytes.erase(pendingBytes.begin());
+                pendingPts += SecondsForBytes(1);
+                continue;
+            }
+            const std::size_t frameBytes =
+                static_cast<std::size_t>(frameWords) * 2U;
+            if (pendingBytes.size() < frameBytes) {
+                error.clear();
+                return true;
+            }
+
+            EncodedSample frameSample = sample;
+            frameSample.bytes.assign(pendingBytes.begin(),
+                                     pendingBytes.begin() + frameBytes);
+            AudioFrame decoded;
+            if (!DecodeFrame(frameSample, decoded)) {
+                output = {};
+                return false;
+            }
+            decoded.pts = pendingPts;
+            if (output.samples.empty()) {
+                output.pts = decoded.pts;
+                output.sampleRate = decoded.sampleRate;
+                output.channels = decoded.channels;
+                output.channelMask = decoded.channelMask;
+            }
+            output.samples.insert(output.samples.end(),
+                                  decoded.samples.begin(),
+                                  decoded.samples.end());
+            pendingBytes.erase(pendingBytes.begin(),
+                               pendingBytes.begin() + frameBytes);
+            pendingPts +=
+                static_cast<double>(kAudioBlocks * kBlockSamples) /
+                static_cast<double>(decoded.sampleRate);
+        }
+    }
+
+    bool Decode(const EncodedSample& sample, AudioFrame& output) {
+        return chunkedWaveInput ? DecodeChunk(sample, output)
+                                : DecodeFrame(sample, output);
+    }
+
     void Reset() {
         for (auto& channel : overlap) channel.fill(0.0);
         ditherState = 0x12345678U;
+        pendingBytes.clear();
+        pendingPts = 0.0;
+        pendingTimestamp = false;
         error.clear();
     }
 };
@@ -1482,6 +1594,8 @@ Ac3Decoder::~Ac3Decoder() = default;
 bool Ac3Decoder::Initialize(const TrackInfo& track) {
     impl_->Reset();
     impl_->track = {};
+    impl_->chunkedWaveInput = false;
+    impl_->averageBytesPerSecond = 0;
     impl_->description.clear();
     if (track.codec != CodecId::Ac3 ||
         (track.sampleRate != 0 &&
@@ -1492,6 +1606,16 @@ bool Ac3Decoder::Initialize(const TrackInfo& track) {
         return impl_->Fail(L"Ac3Decoder received an invalid AC-3 track");
     }
     impl_->track = track;
+    if (track.codecPrivate.size() >= 16U &&
+        track.codecPrivate[0] == 0x00 &&
+        track.codecPrivate[1] == 0x20) {
+        impl_->chunkedWaveInput = true;
+        impl_->averageBytesPerSecond =
+            static_cast<std::uint32_t>(track.codecPrivate[8]) |
+            (static_cast<std::uint32_t>(track.codecPrivate[9]) << 8U) |
+            (static_cast<std::uint32_t>(track.codecPrivate[10]) << 16U) |
+            (static_cast<std::uint32_t>(track.codecPrivate[11]) << 24U);
+    }
     impl_->description =
         L"Native ATSC A/52 AC-3 " +
         std::to_wstring(track.sampleRate) + L" Hz " +

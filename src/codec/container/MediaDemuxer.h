@@ -24,8 +24,8 @@ public:
     virtual const std::wstring& LastError() const noexcept = 0;
 };
 
-// Chooses the built-in container reader from the path extension. Content is
-// still validated by the selected reader before tracks are exposed.
+// Chooses the built-in container reader from the file signature, falling back
+// to the path extension when the signature is unavailable or unknown.
 std::unique_ptr<IMediaDemuxer> CreateMediaDemuxer(const std::wstring& path);
 
 }  // namespace movieplayer::codec

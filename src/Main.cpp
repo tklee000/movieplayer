@@ -71,7 +71,9 @@ bool IsSupportedAudioCodec(movieplayer::codec::CodecId codec) {
            codec == movieplayer::codec::CodecId::Mp3 ||
            codec == movieplayer::codec::CodecId::Opus ||
            codec == movieplayer::codec::CodecId::Flac ||
-           codec == movieplayer::codec::CodecId::Ac3;
+           codec == movieplayer::codec::CodecId::Ac3 ||
+           codec == movieplayer::codec::CodecId::Eac3 ||
+           codec == movieplayer::codec::CodecId::Dts;
 }
 
 const wchar_t* AudioCodecLabel(movieplayer::codec::CodecId codec) {

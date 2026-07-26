@@ -1,4 +1,4 @@
-# MoviePlayer 0.4 Technical Guide
+# MoviePlayer 0.5 Technical Guide
 
 MoviePlayer is a native Windows x64 video player written in C++17. It combines
 a first-party media layer with selected Windows platform decoders, D3D11/DXVA
@@ -17,6 +17,7 @@ The implementation is deliberately split into three clearly defined areas:
 | First-party MoviePlayer code | MP4/MKV/AVI parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows platform components | H.264, MPEG-4 Part 2, and MP3 decode transforms; D3D11 devices, DXVA decode services, video processing, DXGI presentation, XAudio2 output, and WARP rendering fallback |
+| External DirectShow audio decoder | Compatible registered decoder used for Matroska E-AC-3 and DTS decode; its binaries remain external |
 | Optional components | NVIDIA RTX Video VSR, whisper.cpp speech recognition, CTranslate2 translation, and SentencePiece tokenization |
 
 Calling a component "first-party" means that its source was implemented in this
@@ -28,16 +29,18 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Area | Current scope |
 |---|---|
 | Operating system | Windows 10 or 11 x64, per-monitor V2 DPI, Unicode, and long-path-aware file handling |
-| Containers | Non-fragmented MP4, focused Matroska/MKV, and classic indexed RIFF AVI |
+| Containers | Non-fragmented MP4, focused Matroska/MKV, and classic indexed RIFF AVI; signature-first detection with extension fallback |
 | Video | H.264, HEVC Main/Main10 4:2:0 for the supported DXVA paths, and Xvid/DX50 MPEG-4 Part 2 |
-| Audio | AAC-LC at 24, 44.1, or 48 kHz; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MKV with mono through 5.1 input; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
+| Audio | AAC-LC at 24, 44.1, or 48 kHz; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MKV or AVI with mono through 5.1 input; external DirectShow E-AC-3/DTS decode; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
 | Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
 | Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 
-Matroska E-AC-3 and DTS tracks are retained in the audio-track list and shown
-as `[Not Support]`, but MoviePlayer does not decode or select them.
+Matroska E-AC-3 and DTS tracks use a compatible external DirectShow audio
+decoder registered on the system. MoviePlayer discovers a decoder by media
+type and converts its supported PCM output to stereo. It does not install,
+bundle, or prescribe a particular external codec.
 
 These are focused playback implementations for ordinary consumer files, not
 complete implementations of every profile, level, chroma format, bit depth,
@@ -62,11 +65,13 @@ flowchart LR
     K -->|"AAC-LC"| L["First-party AAC decoder, mixer, and resampler"]
     K -->|"FLAC"| Q["First-party lossless FLAC decoder"]
     K -->|"AC-3"| P["First-party AC-3 decoder and stereo downmix"]
+    K -->|"E-AC-3 or DTS"| R["Registered external DirectShow audio decoder"]
     K -->|"MP3"| M["Windows Media Foundation MP3 decoder"]
     K -->|"Opus"| O["BSD-licensed libopus decoder"]
     L --> N["XAudio2 and audio master clock"]
     Q --> N
     P --> N
+    R --> N
     M --> N
     O --> N
 ```
@@ -166,6 +171,7 @@ processor interfaces, so hardware-dependent streams can remain unavailable.
 | AAC-LC decode | First-party decoder | No alternate decoder |
 | Opus decode | Statically linked libopus 1.5.2 | No alternate decoder |
 | MP3 decode | Windows MP3 transform | No alternate decoder |
+| E-AC-3/DTS decode | Compatible registered external DirectShow audio decoder | Track remains visible; opening or selecting it fails normally when no compatible decoder can accept the format |
 
 ## Local AI subtitles
 

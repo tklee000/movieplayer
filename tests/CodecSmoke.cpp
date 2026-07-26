@@ -1,6 +1,7 @@
 #include "codec/audio/aac/AacLcDecoder.h"
 #include "codec/audio/ac3/Ac3Decoder.h"
 #include "codec/audio/flac/FlacDecoder.h"
+#include "codec/audio/directshow/DirectShowAudioDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
@@ -275,7 +276,8 @@ int wmain(int argc, wchar_t** argv) {
             videoTrack = &track;
         if ((track.codec == CodecId::Aac || track.codec == CodecId::Mp3 ||
              track.codec == CodecId::Opus || track.codec == CodecId::Flac ||
-             track.codec == CodecId::Ac3) &&
+             track.codec == CodecId::Ac3 || track.codec == CodecId::Eac3 ||
+             track.codec == CodecId::Dts) &&
             ((!audioTrack && requestedAudioTrack == 0) ||
              track.trackId == requestedAudioTrack)) {
             audioTrack = &track;
@@ -565,6 +567,10 @@ int wmain(int argc, wchar_t** argv) {
         audio = std::make_unique<flac::FlacDecoder>();
     else if (audioTrack->codec == CodecId::Ac3)
         audio = std::make_unique<ac3::Ac3Decoder>();
+    else if (audioTrack->codec == CodecId::Eac3 ||
+             audioTrack->codec == CodecId::Dts)
+        audio =
+            std::make_unique<directshow::DirectShowAudioDecoder>();
     else
         audio = std::make_unique<aac::AacLcDecoder>();
     if (!audio->Initialize(*audioTrack)) {

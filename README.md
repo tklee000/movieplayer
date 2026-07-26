@@ -1,4 +1,4 @@
-# MoviePlayer 0.4
+# MoviePlayer 0.5
 
 MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
@@ -14,6 +14,7 @@ playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 | First-party C/C++ | MP4/MKV/AVI parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows Media Foundation | H.264 and MPEG-4 Part 2 video decoding, plus MP3 audio decoding |
+| External DirectShow audio decoder | E-AC-3 and DTS decoding through a compatible decoder registered on the system; external codec binaries are not linked or distributed |
 | D3D11, DXVA, DXGI, and XAudio2 | Hardware video decode services, GPU video processing and presentation, software-rendering fallback, and audio output |
 | Optional NVIDIA and native AI components | RTX Video VSR, speech recognition, and translation |
 
@@ -32,9 +33,12 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Container: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
   decode/composition timing, sync samples, `avcC`, `hvcC`, and `esds`; plus
   focused Matroska/MKV playback with `SeekHead`, `Cues`, clusters, block groups,
-  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC/Opus/FLAC/AC-3, and
+  and fixed/Xiph/EBML lacing for H.264/HEVC,
+  AAC/Opus/FLAC/AC-3/E-AC-3/DTS, and
   text/bitmap subtitle tracks; plus classic indexed RIFF AVI (`idx1`) for
-  Xvid/DX50 and MP3.
+  Xvid/DX50 with MP3 or AC-3 audio. The container reader is selected from the
+  file signature first, so supported Matroska or AVI content still opens when
+  its filename has an incorrect extension.
 - Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
   decoder with NV12 output, including B-frame MP4 streams without composition
   offsets and the tested High Profile Level 4.2 title;
@@ -48,9 +52,10 @@ implementation ownership, acceleration requirements, and fallback matrix.
   mono/stereo Opus through the BSD-licensed libopus 1.5.2 decoder; plus Windows
   Media Foundation MP3 decoding for AVI; first-party Matroska FLAC decoding
   for 4- through 32-bit streams with up to eight channels and stereo output;
-  and first-party Matroska AC-3 decoding with mono through 5.1 input and stereo
-  downmix. E-AC-3 and DTS tracks are listed in the audio-track menu as
-  `[Not Support]` and are not decoded.
+  and first-party Matroska/AVI AC-3 decoding with mono through 5.1 input and
+  stereo downmix. Matroska E-AC-3 and DTS use a compatible external
+  DirectShow audio decoder registered by the user and are converted to stereo
+  PCM for playback.
 - Seeking: MP4 sync-sample, MKV cue, and AVI keyframe-index seek with decoder
   and audio-clock reset.
 - Subtitles: external SRT, ASS/SSA, and SMI display; Matroska embedded
@@ -85,6 +90,7 @@ src/codec/
     aac/                 AAC-LC decoder and standard Huffman tables
     ac3/                 first-party ATSC A/52 AC-3 decoder
     flac/                first-party IETF RFC 9639 FLAC decoder
+    directshow/          external DirectShow adapter for E-AC-3/DTS
     mp3/                 Windows Media Foundation MP3 backend
     opus/                libopus-backed Matroska Opus decoder
   subtitle/              embedded UTF-8/ASS text decoder
@@ -103,6 +109,12 @@ Requirements:
 - CMake bundled with Visual Studio
 - NVIDIA RTX Video SDK files when VSR is built
 - Pinned native AI source dependencies for the subtitle worker
+
+Runtime playback of Matroska E-AC-3 and DTS uses any compatible external
+DirectShow audio decoder already registered on the system. MoviePlayer does
+not install, bundle, or link an external codec; codec installation and
+registration remain under the user's control. AC-3, E-AC-3, and DTS tracks
+are selectable in the audio-track menu and are not labeled `[Not Support]`.
 
 Set up the remaining optional/source dependencies, then build:
 

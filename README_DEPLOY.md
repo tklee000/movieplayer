@@ -1,4 +1,4 @@
-# MoviePlayer 0.4 binary package
+# MoviePlayer 0.5 binary package
 
 Run `MoviePlayer.exe` from this folder. Required VC142 runtime DLLs are supplied
 beside the application, so a system-wide Visual C++ 2019 Redistributable
@@ -12,6 +12,7 @@ installation is not required. Keep the supplied VC142 DLLs, `nvngx_vsr.dll`,
 | First-party MoviePlayer code | MP4/MKV/AVI parsing, indexing and seeking, HEVC bitstream parsing and DXVA submission, AAC-LC decoding, subtitle handling, channel mixing, and resampling |
 | BSD-licensed libopus 1.5.2 | Matroska mono/stereo Opus decoding |
 | Windows Media Foundation | H.264, MPEG-4 Part 2, and MP3 decoding |
+| External DirectShow audio decoder | Matroska E-AC-3 and DTS decoding to stereo PCM through a compatible registered decoder |
 | D3D11/DXVA/DXGI | Hardware decode services, NV12/P010 video processing, scaling, and presentation |
 | XAudio2 | PCM audio output and the playback master clock |
 
@@ -28,8 +29,12 @@ Windows hardware decoder.
 
 Matroska `A_OPUS` mono and stereo tracks are decoded at 48 kHz. Matroska FLAC
 and AC-3 tracks are decoded by the built-in C++ decoders and delivered or mixed
-to stereo. E-AC-3 and DTS tracks appear in the audio-track menu as
-`[Not Support]`; no decoder for those formats is included in this package.
+to stereo. Matroska E-AC-3 and DTS tracks use a compatible external DirectShow
+audio decoder registered on the system. AC-3, E-AC-3, and DTS tracks are
+selectable from the audio-track menu and are not labeled `[Not Support]`.
+External codec binaries are not included in this MoviePlayer package.
+MoviePlayer does not prescribe or install a particular codec; users manage
+their own DirectShow codec installation.
 
 ## Optional AI subtitles
 

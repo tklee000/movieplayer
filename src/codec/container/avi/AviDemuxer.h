@@ -6,8 +6,9 @@
 
 namespace movieplayer::codec::avi {
 
-// Classic RIFF AVI reader for indexed Xvid/DX50 + MP3 files.  It keeps only
-// compact idx1 metadata in memory and reads media chunks on demand.
+// Classic RIFF AVI reader for indexed Xvid/DX50 video with MP3 or AC-3 audio.
+// It keeps only compact idx1 metadata in memory and reads media chunks on
+// demand.
 class AviDemuxer final : public IMediaDemuxer {
 public:
     AviDemuxer();

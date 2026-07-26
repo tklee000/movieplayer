@@ -5,6 +5,7 @@
 #include "codec/audio/aac/AacLcDecoder.h"
 #include "codec/audio/ac3/Ac3Decoder.h"
 #include "codec/audio/flac/FlacDecoder.h"
+#include "codec/audio/directshow/DirectShowAudioDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
 #include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
@@ -39,7 +40,8 @@ namespace {
 bool IsSupportedAudioCodec(CodecId codec) {
     return codec == CodecId::Aac || codec == CodecId::Mp3 ||
            codec == CodecId::Opus || codec == CodecId::Flac ||
-           codec == CodecId::Ac3;
+           codec == CodecId::Ac3 || codec == CodecId::Eac3 ||
+           codec == CodecId::Dts;
 }
 
 bool SubtitleLanguageMatchesUi(const std::string& language) {
@@ -337,7 +339,12 @@ struct PlayerEngine::Impl {
                                   ? L"FLAC "
                                   : (audioTrack.codec == CodecId::Ac3
                                          ? L"AC-3 "
-                                         : L"AAC-LC ")));
+                                         : (audioTrack.codec == CodecId::Eac3
+                                                ? L"E-AC-3 "
+                                                : (audioTrack.codec ==
+                                                           CodecId::Dts
+                                                       ? L"DTS "
+                                                       : L"AAC-LC ")))));
             out << L"  ·  "
                 << audioName
                 << audioTrack.sampleRate << L" Hz "
@@ -363,6 +370,11 @@ struct PlayerEngine::Impl {
         } else if (track.codec == CodecId::Ac3) {
             decoder =
                 std::make_unique<movieplayer::codec::ac3::Ac3Decoder>();
+        } else if (track.codec == CodecId::Eac3 ||
+                   track.codec == CodecId::Dts) {
+            decoder =
+                std::make_unique<
+                    movieplayer::codec::directshow::DirectShowAudioDecoder>();
         } else {
             failure = L"The selected audio codec is not supported";
             return nullptr;

@@ -169,14 +169,28 @@ struct AviDemuxer::Impl {
             }
         } else if (type == FourCc('a', 'u', 'd', 's') && format.size() >= 16) {
             const std::uint16_t formatTag = ReadU16(format.data());
-            if (formatTag != 0x0055) return true;
             track.info.type = TrackType::Audio;
-            track.info.codec = CodecId::Mp3;
-            track.info.sampleEntry = "MP3 ";
+            if (formatTag == 0x0055) {
+                track.info.codec = CodecId::Mp3;
+                track.info.sampleEntry = "MP3 ";
+            } else if (formatTag == 0x2000) {
+                // WAVE_FORMAT_DOLBY_AC3. AVI interleaving may split an AC-3
+                // frame across adjacent ##wb chunks; Ac3Decoder reassembles
+                // those chunks using this WAVEFORMATEX codec-private block.
+                track.info.codec = CodecId::Ac3;
+                track.info.sampleEntry = "AC-3";
+            } else {
+                return true;
+            }
             track.info.channels = ReadU16(format.data() + 2);
             track.info.sampleRate = static_cast<int>(ReadU32(format.data() + 4));
             track.info.bitsPerSample = ReadU16(format.data() + 14);
             track.info.codecPrivate = std::move(format);
+            track.info.defaultTrack =
+                std::none_of(tracks.begin(), tracks.end(),
+                             [](const Track& existing) {
+                                 return existing.info.type == TrackType::Audio;
+                             });
         } else {
             return true;
         }
@@ -321,7 +335,8 @@ struct AviDemuxer::Impl {
             position = payload + size + (size & 1U);
         }
         if (tracks.empty() || moviTypeOffset == 0)
-            return Fail(L"The AVI file has no supported Xvid/DX50 or MP3 streams");
+            return Fail(
+                L"The AVI file has no supported Xvid/DX50, MP3, or AC-3 streams");
         if (!ParseIndex()) return false;
 
         bool selectedVideo = false;
