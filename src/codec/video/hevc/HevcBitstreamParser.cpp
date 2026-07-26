@@ -324,9 +324,12 @@ bool HevcBitstreamParser::Initialize(const TrackInfo& track) {
     const unsigned chromaFormat = track.codecPrivate[16] & 3U;
     const unsigned lumaDepth = 8U + (track.codecPrivate[17] & 7U);
     const unsigned chromaDepth = 8U + (track.codecPrivate[18] & 7U);
-    if (profileIdc != 2 || chromaFormat != 1 || lumaDepth != 10 ||
-        chromaDepth != 10) {
-        return Fail(L"Only HEVC Main 10 4:2:0 is supported");
+    const bool mainProfile =
+        profileIdc == 1 && lumaDepth == 8 && chromaDepth == 8;
+    const bool main10Profile =
+        profileIdc == 2 && lumaDepth == 10 && chromaDepth == 10;
+    if ((!mainProfile && !main10Profile) || chromaFormat != 1) {
+        return Fail(L"Only HEVC Main/Main 10 4:2:0 is supported");
     }
     nalLengthSize_ = 1U + (track.codecPrivate[21] & 3U);
     if (nalLengthSize_ < 1 || nalLengthSize_ > 4) {
@@ -505,9 +508,12 @@ bool HevcBitstreamParser::ParseSps(const std::uint8_t* data, std::size_t size) {
     bool vuiPresent = false;
     if (!Flag(bits, vuiPresent)) return Fail(L"Truncated SPS VUI flag");
     if (vuiPresent) ParseVuiPrefix(bits, sps);
-    if (sps.chromaFormatIdc != 1 || sps.bitDepthLumaMinus8 != 2 ||
-        sps.bitDepthChromaMinus8 != 2 || sps.separateColourPlaneFlag) {
-        return Fail(L"The stream is not HEVC Main 10 4:2:0");
+    const bool supportedBitDepth =
+        (sps.bitDepthLumaMinus8 == 0 && sps.bitDepthChromaMinus8 == 0) ||
+        (sps.bitDepthLumaMinus8 == 2 && sps.bitDepthChromaMinus8 == 2);
+    if (sps.chromaFormatIdc != 1 || !supportedBitDepth ||
+        sps.separateColourPlaneFlag) {
+        return Fail(L"The stream is not HEVC Main/Main 10 4:2:0");
     }
     sps_[sps.id] = std::move(sps);
     hasSps_[sps.id] = true;
@@ -604,7 +610,7 @@ bool HevcBitstreamParser::ParsePps(const std::uint8_t* data, std::size_t size) {
     bool extensionPresent = false;
     if (!Flag(bits, extensionPresent)) return Fail(L"Truncated PPS extension flag");
     if (extensionPresent) {
-        return Fail(L"HEVC PPS extensions are not supported by the Main 10 path");
+        return Fail(L"HEVC PPS extensions are not supported by the Main/Main 10 path");
     }
     pps_[pps.id] = std::move(pps);
     hasPps_[pps.id] = true;

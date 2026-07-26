@@ -100,32 +100,41 @@ struct D3D11HevcDecoder::Impl {
     }
 
     bool SelectConfiguration(const SequenceParameterSet& sps) {
+        const bool main10 = sps.bitDepthLumaMinus8 == 2;
+        const GUID decodeProfile = main10
+                                       ? D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10
+                                       : D3D11_DECODER_PROFILE_HEVC_VLD_MAIN;
+        const DXGI_FORMAT outputFormat =
+            main10 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
+        const wchar_t* profileName = main10 ? L"Main 10" : L"Main";
+        const wchar_t* formatName = main10 ? L"P010" : L"NV12";
         UINT profileCount = videoDevice->GetVideoDecoderProfileCount();
         bool profileFound = false;
         for (UINT i = 0; i < profileCount; ++i) {
             GUID profile = {};
             if (SUCCEEDED(videoDevice->GetVideoDecoderProfile(i, &profile)) &&
-                SameGuid(profile, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10)) {
+                SameGuid(profile, decodeProfile)) {
                 profileFound = true;
                 break;
             }
         }
         if (!profileFound) {
-            return Fail(L"The GPU does not expose the D3D11 HEVC Main 10 decoder profile");
+            return Fail(std::wstring(L"The GPU does not expose the D3D11 HEVC ") +
+                        profileName + L" decoder profile");
         }
         BOOL formatSupported = FALSE;
         HRESULT hr = videoDevice->CheckVideoDecoderFormat(
-            &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, DXGI_FORMAT_P010,
-            &formatSupported);
+            &decodeProfile, outputFormat, &formatSupported);
         if (FAILED(hr) || !formatSupported) {
             return Fail(FAILED(hr)
-                            ? HresultText(L"CheckVideoDecoderFormat(P010)", hr)
-                            : L"The GPU HEVC Main 10 decoder does not output P010");
+                            ? HresultText(L"CheckVideoDecoderFormat(HEVC)", hr)
+                            : std::wstring(L"The GPU HEVC ") + profileName +
+                                  L" decoder does not output " + formatName);
         }
-        decoderDescription.Guid = D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10;
+        decoderDescription.Guid = decodeProfile;
         decoderDescription.SampleWidth = sps.width;
         decoderDescription.SampleHeight = sps.height;
-        decoderDescription.OutputFormat = DXGI_FORMAT_P010;
+        decoderDescription.OutputFormat = outputFormat;
 
         UINT configurationCount = 0;
         hr = videoDevice->GetVideoDecoderConfigCount(&decoderDescription,
@@ -133,7 +142,8 @@ struct D3D11HevcDecoder::Impl {
         if (FAILED(hr) || configurationCount == 0) {
             return Fail(FAILED(hr)
                             ? HresultText(L"GetVideoDecoderConfigCount", hr)
-                            : L"The GPU returned no HEVC Main 10 decoder configuration");
+                            : std::wstring(L"The GPU returned no HEVC ") +
+                                  profileName + L" decoder configuration");
         }
         bool found = false;
         std::wostringstream available;
@@ -167,7 +177,7 @@ struct D3D11HevcDecoder::Impl {
         if (!SelectConfiguration(sps)) return false;
         HRESULT hr = videoDevice->CreateVideoDecoder(
             &decoderDescription, &decoderConfiguration, &decoder);
-        if (FAILED(hr)) return Fail(HresultText(L"CreateVideoDecoder(HEVC Main10)", hr));
+        if (FAILED(hr)) return Fail(HresultText(L"CreateVideoDecoder(HEVC)", hr));
 
         // The decode thread may be one frame ahead of the bounded presentation
         // queue. Keep those display-owned surfaces in addition to the codec DPB.
@@ -178,12 +188,14 @@ struct D3D11HevcDecoder::Impl {
         textureDescription.Height = sps.height;
         textureDescription.MipLevels = 1;
         textureDescription.ArraySize = surfaceCount;
-        textureDescription.Format = DXGI_FORMAT_P010;
+        textureDescription.Format = decoderDescription.OutputFormat;
         textureDescription.SampleDesc.Count = 1;
         textureDescription.Usage = D3D11_USAGE_DEFAULT;
         textureDescription.BindFlags = D3D11_BIND_DECODER;
         hr = device->CreateTexture2D(&textureDescription, nullptr, &surfacesTexture);
-        if (FAILED(hr)) return Fail(HresultText(L"CreateTexture2D(P010 decoder surfaces)", hr));
+        if (FAILED(hr)) {
+            return Fail(HresultText(L"CreateTexture2D(HEVC decoder surfaces)", hr));
+        }
 
         surfaces.resize(surfaceCount);
         for (UINT i = 0; i < surfaceCount; ++i) {
@@ -582,7 +594,9 @@ struct D3D11HevcDecoder::Impl {
         }
         track = sourceTrack;
         if (!parser.Initialize(track)) return Fail(parser.LastError());
-        description = L"Native D3D11/DXVA HEVC Main 10 (P010)";
+        const bool main10 = (track.codecPrivate[17] & 7U) == 2U;
+        description = main10 ? L"Native D3D11/DXVA HEVC Main 10 (P010)"
+                             : L"Native D3D11/DXVA HEVC Main (NV12)";
         return true;
     }
 
@@ -611,9 +625,13 @@ struct D3D11HevcDecoder::Impl {
             discardRaslPictures = false;
         }
         if (!decoder && !CreateDecoderResources(*unit.sps)) return false;
+        const DXGI_FORMAT outputFormat =
+            unit.sps->bitDepthLumaMinus8 == 2 ? DXGI_FORMAT_P010
+                                              : DXGI_FORMAT_NV12;
         if (decoderDescription.SampleWidth != unit.sps->width ||
-            decoderDescription.SampleHeight != unit.sps->height) {
-            return Fail(L"Mid-stream HEVC resolution changes are not supported");
+            decoderDescription.SampleHeight != unit.sps->height ||
+            decoderDescription.OutputFormat != outputFormat) {
+            return Fail(L"Mid-stream HEVC resolution or bit-depth changes are not supported");
         }
         MarkReferenceSet(unit);
         const int surfaceIndex = AcquireSurface();
@@ -629,7 +647,7 @@ struct D3D11HevcDecoder::Impl {
         auto frame = std::make_shared<VideoFrame>();
         frame->texture = surfacesTexture;
         frame->arraySlice = static_cast<UINT>(surfaceIndex);
-        frame->format = DXGI_FORMAT_P010;
+        frame->format = decoderDescription.OutputFormat;
         frame->width = track.width > 0 ? track.width : static_cast<int>(unit.sps->width);
         frame->height = track.height > 0 ? track.height : static_cast<int>(unit.sps->height);
         frame->sampleAspectRatio = unit.sps->sampleAspectRatio.IsValid()

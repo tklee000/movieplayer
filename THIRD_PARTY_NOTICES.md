@@ -1,16 +1,16 @@
 # MoviePlayer third-party components and license notices
 
 This document describes the third-party components in the current MoviePlayer
-0.2 source tree and Windows x64 binary package. The original license text from
+0.3 source tree and Windows x64 binary package. The original license text from
 each rights holder takes precedence over this summary. This document is not
 legal advice.
 
 Dependency versions and commits are pinned in
-`scripts/setup_native_ai_dependencies.ps1`. Model revisions, expected sizes,
-and SHA-256 digests are pinned in `scripts/setup_whisper.ps1` and
-`scripts/setup_japanese_translation_model.ps1`. During packaging,
-`scripts/create_deploy.ps1` copies the applicable license texts into the
-`licenses` directory.
+`scripts/setup_native_ai_dependencies.ps1` and `scripts/setup_opus.ps1`.
+Model revisions, expected sizes, and SHA-256 digests are pinned in
+`scripts/setup_whisper.ps1` and `scripts/setup_japanese_translation_model.ps1`.
+During packaging, `scripts/create_deploy.ps1` copies the applicable license
+texts into the `licenses` directory.
 
 ## 0. First-party implementation boundary
 
@@ -31,6 +31,7 @@ respective standards.
 
 | Component | Pinned version or commit | Purpose | License | Original text or source location |
 |---|---|---|---|---|
+| libopus | 1.5.2, `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | Matroska Opus audio decoding | BSD-3-Clause with royalty-free patent grants described by the project | `third_party/opus/COPYING` |
 | NVIDIA RTX Video SDK | 1.1 | RTX Video VSR | Proprietary NVIDIA RTX SDK license | `third_party/rtx_video_sdk/NVIDIA_RTX_Video_SDK_License.pdf` |
 | whisper.cpp and GGML | 1.9.1, `f049fff95a089aa9969deb009cdd4892b3e74916` | Speech recognition | MIT | `third_party/whisper_cpp/LICENSE` |
 | CTranslate2 | 4.8.1, `0d8bcd362ac75ef860ef161d6f0efad0ae439ff0` | Translation-model inference | MIT | `third_party/ctranslate2/LICENSE` |
@@ -53,6 +54,12 @@ GGML is part of the pinned whisper.cpp source tree rather than a separate
 download. spdlog is included in header-only mode by CTranslate2. Ruy includes
 cpuinfo, and cpuinfo includes clog. This SentencePiece build uses its bundled
 protobuf-lite and selected Abseil and Darts code.
+
+libopus is built as a static library with its encoder tools, tests, custom
+modes, DRED, and OSCE disabled. The standard package copies the complete
+upstream BSD-3-Clause and patent notice to
+`licenses/libopus-LICENSE.txt`. MoviePlayer does not include `opus-tools` or
+the GPL-licensed `opusinfo` utility.
 
 `avx_mathfun.h`, `avx512_mathfun.h`, and `neon_mathfun.h` are selected
 according to the target CPU and compiler options. AVX-family code can be used
@@ -139,6 +146,8 @@ first-party MoviePlayer test fixture.
 
 - Ship this `THIRD_PARTY_NOTICES.md` file and the `licenses` directory.
 - Retain all MIT, BSD, Apache, and zlib notices in source and binary packages.
+- Keep `licenses/libopus-LICENSE.txt` with every binary package containing
+  the statically linked libopus decoder.
 - Run `scripts/verify_release.ps1` to validate executable imports and runtime
   files in the distribution directory.
 - Keep the original NVIDIA SDK license with `nvngx_vsr.dll`.

@@ -1,5 +1,6 @@
 #include "codec/audio/aac/AacLcDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
+#include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
 #include "codec/subtitle/TextSubtitleDecoder.h"
 #include "codec/subtitle/VobSubDecoder.h"
@@ -156,7 +157,8 @@ int wmain(int argc, wchar_t** argv) {
             (track.codec == CodecId::H264 || track.codec == CodecId::Hevc ||
              track.codec == CodecId::Mpeg4Part2))
             videoTrack = &track;
-        if ((track.codec == CodecId::Aac || track.codec == CodecId::Mp3) &&
+        if ((track.codec == CodecId::Aac || track.codec == CodecId::Mp3 ||
+             track.codec == CodecId::Opus) &&
             ((!audioTrack && requestedAudioTrack == 0) ||
              track.trackId == requestedAudioTrack)) {
             audioTrack = &track;
@@ -291,6 +293,8 @@ int wmain(int argc, wchar_t** argv) {
     std::unique_ptr<IAudioDecoder> audio;
     if (audioTrack->codec == CodecId::Mp3)
         audio = std::make_unique<mp3::MfMp3Decoder>();
+    else if (audioTrack->codec == CodecId::Opus)
+        audio = std::make_unique<opus::OpusDecoder>();
     else
         audio = std::make_unique<aac::AacLcDecoder>();
     if (!audio->Initialize(*audioTrack)) {
@@ -299,6 +303,13 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::wcout << L"audio decoder: " << audio->Description() << L"\n";
 
+    const bool hevcVideo = videoTrack->codec == CodecId::Hevc;
+    const bool hevcMain10 =
+        hevcVideo && videoTrack->codecPrivate.size() > 17U &&
+        (videoTrack->codecPrivate[17] & 7U) == 2U;
+    const DXGI_FORMAT expectedVideoFormat =
+        hevcMain10 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
+    const bool nv12Video = expectedVideoFormat == DXGI_FORMAT_NV12;
     double audioEnergy = 0.0;
     std::uint64_t audioValues = 0;
     unsigned bestLumaRange = 0;
@@ -333,9 +344,7 @@ int wmain(int argc, wchar_t** argv) {
                 }
                 for (const auto& frame : frames) {
                     if (!frame || !frame->texture ||
-                        frame->format != (videoTrack->codec == CodecId::Hevc
-                                             ? DXGI_FORMAT_P010
-                                             : DXGI_FORMAT_NV12) ||
+                        frame->format != expectedVideoFormat ||
                         frame->width != videoTrack->width ||
                         frame->height != videoTrack->height ||
                         !std::isfinite(frame->pts) ||
@@ -354,8 +363,8 @@ int wmain(int argc, wchar_t** argv) {
                         return false;
                     }
                     previousVideoPts = frame->pts;
-                    if (videoTrack->codec != CodecId::Hevc &&
-                        bestLumaRange < 8 && (videoFrames % 30U) == 0) {
+                    if (nv12Video && bestLumaRange < 8 &&
+                        (videoFrames % 30U) == 0) {
                         unsigned range = 0;
                         std::wstring readbackError;
                         if (!ReadNv12LumaRange(device.Get(), context.Get(), *frame,
@@ -396,7 +405,7 @@ int wmain(int argc, wchar_t** argv) {
                 }
                 for (float value : frame.samples) {
                     if (!std::isfinite(value)) {
-                        std::wcerr << L"AAC decoder returned a non-finite sample\n";
+                        std::wcerr << L"audio decoder returned a non-finite sample\n";
                         return false;
                     }
                     audioEnergy += static_cast<double>(value) * value;
@@ -445,12 +454,11 @@ int wmain(int argc, wchar_t** argv) {
         return videoFrames >= wantedVideo && audioFrames >= wantedAudio;
     };
 
-    const bool nv12Video = videoTrack->codec != CodecId::Hevc;
-    if (!decodeSpan(nv12Video ? 600U : 1440U,
-                    nv12Video ? 500U : 2820U,
+    if (!decodeSpan(hevcVideo ? 1440U : 600U,
+                    hevcVideo ? 2820U : 500U,
                     videoTrack->codec == CodecId::Mpeg4Part2
                         ? L"start-MPEG4-Part2"
-                        : (nv12Video ? L"start-H264" : L"start-60s")))
+                        : (hevcVideo ? L"start-HEVC" : L"start-H264")))
         return 8;
     if (nv12Video && bestLumaRange < 8) {
         std::wcerr << L"decoded NV12 frames contain no measurable image contrast\n";
@@ -468,7 +476,7 @@ int wmain(int argc, wchar_t** argv) {
         return 9;
     }
     audio->Reset();
-    if (!decodeSpan(nv12Video ? 120U : 48U, 80, L"seek")) return 10;
+    if (!decodeSpan(hevcVideo ? 48U : 120U, 80, L"seek")) return 10;
 
     if (matroska && videoTrack->codec == CodecId::Hevc) {
         // Cover several Matroska cues, including the quarter point that used

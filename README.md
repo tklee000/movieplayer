@@ -1,26 +1,28 @@
-# MoviePlayer 0.2
+# MoviePlayer 0.3
 
 MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
 The repository contains the container
 parsers, sample indexing and seeking, codec interfaces, HEVC bitstream and
-DXVA submission code, AAC-LC decoder, channel mixer, subtitle parsers, and
-subtitle-audio resampler.
+DXVA submission code, AAC-LC decoder, libopus-backed Opus playback, channel
+mixer, subtitle parsers, and subtitle-audio resampler.
 
 ## Implementation boundary
 
 | Layer | MoviePlayer uses it for |
 |---|---|
 | First-party C/C++ | MP4/MKV/AVI parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
+| libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows Media Foundation | H.264 and MPEG-4 Part 2 video decoding, plus MP3 audio decoding |
 | D3D11, DXVA, DXGI, and XAudio2 | Hardware video decode services, GPU video processing and presentation, software-rendering fallback, and audio output |
 | Optional NVIDIA and native AI components | RTX Video VSR, speech recognition, and translation |
 
 The decoder and renderer share one D3D11 device. H.264 requests DXVA through
-the Windows transform and can fall back to its software path. HEVC Main10 uses
-MoviePlayer's bitstream parser and requires the GPU's D3D11 Main10/P010 decode
-profile; there is no current software HEVC fallback. RTX Video VSR is optional,
-and any VSR failure returns to standard D3D11 scaling without stopping playback.
+the Windows transform and can fall back to its software path. HEVC Main and
+Main10 use MoviePlayer's bitstream parser and require the GPU's matching D3D11
+Main/NV12 or Main10/P010 decode profile; there is no current software HEVC
+fallback. RTX Video VSR is optional, and any VSR failure returns to standard
+D3D11 scaling without stopping playback.
 
 See [the technical guide](docs/MoviePlayer-Wiki.md) for the full architecture,
 implementation ownership, acceleration requirements, and fallback matrix.
@@ -30,8 +32,8 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Container: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
   decode/composition timing, sync samples, `avcC`, `hvcC`, and `esds`; plus
   focused Matroska/MKV playback with `SeekHead`, `Cues`, clusters, block groups,
-  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC, and text/bitmap subtitle tracks;
-  plus classic indexed RIFF AVI (`idx1`) for Xvid/DX50 and MP3.
+  and fixed/Xiph/EBML lacing for H.264/HEVC, AAC/Opus, and text/bitmap subtitle
+  tracks; plus classic indexed RIFF AVI (`idx1`) for Xvid/DX50 and MP3.
 - Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
   decoder with NV12 output, including the tested High Profile Level 4.2 title;
   and HEVC Main/Main10 4:2:0 streams matching the supplied x265 test title.
@@ -40,8 +42,10 @@ implementation ownership, acceleration requirements, and fallback matrix.
 - Audio: AAC-LC at 24, 44.1, and 48 kHz, including spectral Huffman decoding,
   inverse quantization,
   stereo tools, TNS, IMDCT/window overlap, native stereo playback,
-  5.1-to-stereo mixing, PCE 7.1-to-stereo mixing, and XAudio2; plus Windows
-  Media Foundation MP3 decoding for AVI.
+  5.1-to-stereo mixing, PCE 7.1-to-stereo mixing, and XAudio2; Matroska
+  mono/stereo Opus through the BSD-licensed libopus 1.5.2 decoder; plus Windows
+  Media Foundation MP3 decoding for AVI. Matroska AC-3, E-AC-3, and DTS tracks
+  are listed in the audio-track menu as `[Not Support]` and are not decoded.
 - Seeking: MP4 sync-sample, MKV cue, and AVI keyframe-index seek with decoder
   and audio-clock reset.
 - Subtitles: external SRT, ASS/SSA, and SMI display; Matroska embedded
@@ -56,7 +60,7 @@ consumer video files commonly distributed online. They are not complete
 implementations of every profile, level, chroma format, bit depth, container
 combination, or optional bitstream feature in those standards. Unsupported or
 unusual files may fail to open or decode. A compatible Windows hardware HEVC
-Main10 decoder is required for HEVC Main10 playback; H.264 uses the Windows
+Main or Main10 decoder is required for HEVC playback; H.264 uses the Windows
 Media Foundation decoder and requests DXVA acceleration when available. The
 native AAC-LC decoder is similarly scoped to the formats listed above.
 
@@ -74,6 +78,7 @@ src/codec/
     AudioDecoder.h       audio decoder interface
     aac/                 AAC-LC decoder and standard Huffman tables
     mp3/                 Windows Media Foundation MP3 backend
+    opus/                libopus-backed Matroska Opus decoder
   subtitle/              embedded UTF-8/ASS text decoder
   video/
     VideoDecoder.h       video decoder interface shared by H.264 and HEVC
@@ -95,6 +100,7 @@ Set up the remaining optional/source dependencies, then build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_rtx_video_sdk.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_opus.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_native_ai_dependencies.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Configuration Release
 ```
@@ -109,7 +115,8 @@ cmake --build build-vs2019 --config Release --target MovieCodecSmoke
 
 ## License
 
-MoviePlayer first-party source is licensed under the MIT License. NVIDIA and
-the optional native AI libraries/models retain their own licenses; see
-`THIRD_PARTY_NOTICES.md`. The MIT license covers only MoviePlayer's first-party
-code and does not relicense Windows components, SDKs, libraries, or models.
+MoviePlayer first-party source is licensed under the MIT License. libopus,
+NVIDIA, and the optional native AI libraries/models retain their own licenses;
+see `THIRD_PARTY_NOTICES.md`. The MIT license covers only MoviePlayer's
+first-party code and does not relicense Windows components, SDKs, libraries,
+or models.

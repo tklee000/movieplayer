@@ -66,6 +66,31 @@ constexpr DWORD kDwmBorderColor = 34;
 constexpr DWORD kDwmCaptionColor = 35;
 constexpr DWORD kDwmTextColor = 36;
 
+bool IsSupportedAudioCodec(movieplayer::codec::CodecId codec) {
+    return codec == movieplayer::codec::CodecId::Aac ||
+           codec == movieplayer::codec::CodecId::Mp3 ||
+           codec == movieplayer::codec::CodecId::Opus;
+}
+
+const wchar_t* AudioCodecLabel(movieplayer::codec::CodecId codec) {
+    switch (codec) {
+    case movieplayer::codec::CodecId::Aac:
+        return L"AAC-LC";
+    case movieplayer::codec::CodecId::Mp3:
+        return L"MP3";
+    case movieplayer::codec::CodecId::Opus:
+        return L"Opus";
+    case movieplayer::codec::CodecId::Ac3:
+        return L"AC-3";
+    case movieplayer::codec::CodecId::Eac3:
+        return L"E-AC-3";
+    case movieplayer::codec::CodecId::Dts:
+        return L"DTS";
+    default:
+        return L"Unknown";
+    }
+}
+
 struct DarkMenuItem {
     std::wstring text;
     bool separator = false;
@@ -916,10 +941,11 @@ private:
         const movieplayer::codec::TrackInfo& track, std::size_t index) const {
         std::wstring label = std::to_wstring(index + 1) + L". ";
         const std::wstring name = Utf8ToWide(track.name);
-        const std::wstring codec = track.codec == movieplayer::codec::CodecId::Mp3
-                                       ? L"MP3"
-                                       : L"AAC-LC";
+        const std::wstring codec = AudioCodecLabel(track.codec);
         label += name.empty() ? codec : name + L" — " + codec;
+        if (!IsSupportedAudioCodec(track.codec)) {
+            label += L" [Not Support]";
+        }
         const std::wstring language = Utf8ToWide(track.language);
         if (!language.empty() && language != L"und") {
             label += L" [" + language + L"]";
@@ -978,7 +1004,11 @@ private:
         } else {
             for (std::size_t i = 0; i < audioCount; ++i) {
                 const std::wstring label = FormatAudioTrackLabel(audioTracks[i], i);
-                AppendMenuW(audioTrackMenu_, MF_STRING,
+                const UINT flags =
+                    MF_STRING | (IsSupportedAudioCodec(audioTracks[i].codec)
+                                     ? MF_ENABLED
+                                     : MF_GRAYED);
+                AppendMenuW(audioTrackMenu_, flags,
                             kAudioTrackCommandBase + static_cast<UINT>(i),
                             label.c_str());
             }
@@ -3016,6 +3046,12 @@ private:
         const std::size_t audioCount =
             (std::min)(audioTracks.size(), kMaximumTrackMenuItems);
         for (std::size_t i = 0; i < audioCount; ++i) {
+            EnableMenuItem(
+                audioTrackMenu_,
+                kAudioTrackCommandBase + static_cast<UINT>(i),
+                MF_BYCOMMAND | (IsSupportedAudioCodec(audioTracks[i].codec)
+                                    ? MF_ENABLED
+                                    : MF_GRAYED));
             CheckMenuItem(audioTrackMenu_,
                           kAudioTrackCommandBase + static_cast<UINT>(i),
                           MF_BYCOMMAND |

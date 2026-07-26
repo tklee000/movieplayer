@@ -88,6 +88,7 @@ $copyMap = @{
     'third_party\sentencepiece\third_party\protobuf-lite\LICENSE' = 'licenses\protobuf-lite-LICENSE.txt'
     'third_party\sentencepiece\third_party\darts_clone\LICENSE' = 'licenses\Darts-clone-LICENSE.txt'
     'third_party\sentencepiece\third_party\esaxx\LICENSE' = 'licenses\esaxx-LICENSE.txt'
+    'third_party\opus\COPYING' = 'licenses\libopus-LICENSE.txt'
 }
 foreach ($entry in $copyMap.GetEnumerator()) {
     $source = Join-Path $Root $entry.Key

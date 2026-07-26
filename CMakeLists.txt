@@ -4,7 +4,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-project(MoviePlayer VERSION 0.2.0.0 LANGUAGES C CXX RC)
+project(MoviePlayer VERSION 0.3.0.0 LANGUAGES C CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "MoviePlayer is a native Win32 application and must be built on Windows.")
@@ -53,6 +53,8 @@ set(CTRANSLATE2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ctranslate2" CACHE
     "Path to the pinned CTranslate2 source tree")
 set(SENTENCEPIECE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sentencepiece" CACHE PATH
     "Path to the pinned SentencePiece source tree")
+set(OPUS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus" CACHE PATH
+    "Path to the pinned libopus source tree")
 
 set(RTX_VIDEO_SDK_REQUIRED_FILES
     "include/nvsdk_ngx_helpers_vsr.h"
@@ -76,6 +78,16 @@ foreach(native_ai_source IN ITEMS
         message(FATAL_ERROR
             "Native AI build dependency is missing: ${native_ai_source}. "
             "Run scripts/setup_native_ai_dependencies.ps1 first.")
+    endif()
+endforeach()
+foreach(opus_source IN ITEMS
+        "${OPUS_ROOT}/CMakeLists.txt"
+        "${OPUS_ROOT}/include/opus.h"
+        "${OPUS_ROOT}/COPYING")
+    if(NOT EXISTS "${opus_source}")
+        message(FATAL_ERROR
+            "libopus build dependency is missing: ${opus_source}. "
+            "Run scripts/setup_opus.ps1 first.")
     endif()
 endforeach()
 
@@ -122,6 +134,19 @@ set(SPM_ENABLE_MSVC_MT_BUILD OFF CACHE BOOL "" FORCE)
 add_subdirectory("${SENTENCEPIECE_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/native/sentencepiece"
                  EXCLUDE_FROM_ALL)
 
+# libopus is linked statically into MoviePlayer. Its BSD-3-Clause notice is
+# copied into every deployment package by create_deploy.ps1.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_DRED OFF CACHE BOOL "" FORCE)
+set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
+add_subdirectory("${OPUS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/native/opus"
+                 EXCLUDE_FROM_ALL)
+
 # Codec code is intentionally split by responsibility. Container and audio
 # modules do not depend on the video backend, so the subtitle worker can reuse
 # MP4/AAC without pulling in the video decoder backends.
@@ -161,9 +186,11 @@ add_library(MovieCodecAudio STATIC
     src/codec/audio/aac/AacLcDecoder.h
     src/codec/audio/mp3/MfMp3Decoder.cpp
     src/codec/audio/mp3/MfMp3Decoder.h
+    src/codec/audio/opus/OpusDecoder.cpp
+    src/codec/audio/opus/OpusDecoder.h
 )
 target_link_libraries(MovieCodecAudio PUBLIC MovieCodecCore mfplat mfuuid
-    wmcodecdspuuid ole32)
+    wmcodecdspuuid ole32 Opus::opus)
 
 add_library(MovieCodecVideo STATIC
     src/codec/video/VideoDecoder.h

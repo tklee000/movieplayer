@@ -28,6 +28,7 @@ if (-not $Clean -and (Test-Path -LiteralPath $CMakeCache -PathType Leaf)) {
 if (-not (Test-Path (Join-Path $Root 'third_party\rtx_video_sdk\lib\Windows\x64\nvsdk_ngx_d.lib'))) {
     & (Join-Path $Root 'scripts\setup_rtx_video_sdk.ps1')
 }
+& (Join-Path $Root 'scripts\setup_opus.ps1')
 $nativeAiRequired = @(
     'third_party\whisper_cpp\CMakeLists.txt',
     'third_party\ctranslate2\CMakeLists.txt',

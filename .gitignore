@@ -9,6 +9,7 @@
 !/third_party/ctranslate2/.gitkeep
 /third_party/sentencepiece/*
 !/third_party/sentencepiece/.gitkeep
+/third_party/opus/
 /third_party/RTX_Video_SDK_*.zip
 /.rtx-video-sdk-download/
 /third_party/whisper/*

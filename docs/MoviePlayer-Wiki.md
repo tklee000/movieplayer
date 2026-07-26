@@ -1,4 +1,4 @@
-# MoviePlayer 0.2 Technical Guide
+# MoviePlayer 0.3 Technical Guide
 
 MoviePlayer is a native Windows x64 video player written in C++17. It combines
 a first-party media layer with selected Windows platform decoders, D3D11/DXVA
@@ -15,6 +15,7 @@ The implementation is deliberately split into three clearly defined areas:
 | Area | Responsibility |
 |---|---|
 | First-party MoviePlayer code | MP4/MKV/AVI parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
+| libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
 | Windows platform components | H.264, MPEG-4 Part 2, and MP3 decode transforms; D3D11 devices, DXVA decode services, video processing, DXGI presentation, XAudio2 output, and WARP rendering fallback |
 | Optional components | NVIDIA RTX Video VSR, whisper.cpp speech recognition, CTranslate2 translation, and SentencePiece tokenization |
 
@@ -28,12 +29,15 @@ GPU driver, optional SDK, or AI libraries that it calls.
 |---|---|
 | Operating system | Windows 10 or 11 x64, per-monitor V2 DPI, Unicode, and long-path-aware file handling |
 | Containers | Non-fragmented MP4, focused Matroska/MKV, and classic indexed RIFF AVI |
-| Video | H.264, HEVC Main10 4:2:0 for the supported DXVA path, and Xvid/DX50 MPEG-4 Part 2 |
-| Audio | AAC-LC at 24, 44.1, or 48 kHz; stereo, 5.1, and PCE 7.1 downmix paths; MP3 in AVI; XAudio2 output |
+| Video | H.264, HEVC Main/Main10 4:2:0 for the supported DXVA paths, and Xvid/DX50 MPEG-4 Part 2 |
+| Audio | AAC-LC at 24, 44.1, or 48 kHz; stereo, 5.1, and PCE 7.1 downmix paths; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
 | Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
 | Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
+
+Matroska AC-3, E-AC-3, and DTS tracks are retained in the audio-track list and
+shown as `[Not Support]`, but MoviePlayer does not decode or select them.
 
 These are focused playback implementations for ordinary consumer files, not
 complete implementations of every profile, level, chroma format, bit depth,
@@ -47,9 +51,9 @@ flowchart LR
     A["MP4 / MKV / AVI file"] --> B["First-party demuxer and sample index"]
     B --> C{"Video codec"}
     C -->|"H.264 or MPEG-4 Part 2"| D["Windows Media Foundation decoder"]
-    C -->|"HEVC Main10"| E["First-party HEVC parser and DXVA submission"]
+    C -->|"HEVC Main or Main10"| E["First-party HEVC parser and DXVA submission"]
     D --> F["NV12 D3D11 texture"]
-    E --> G["P010 D3D11 decode surface"]
+    E --> G["NV12 or P010 D3D11 decode surface"]
     F --> H["D3D11 video processor"]
     G --> H
     H --> I["Optional HDR/VSR processing"]
@@ -57,8 +61,10 @@ flowchart LR
     B --> K{"Audio codec"}
     K -->|"AAC-LC"| L["First-party AAC decoder, mixer, and resampler"]
     K -->|"MP3"| M["Windows Media Foundation MP3 decoder"]
+    K -->|"Opus"| O["BSD-licensed libopus decoder"]
     L --> N["XAudio2 and audio master clock"]
     M --> N
+    O --> N
 ```
 
 The demux, video-decode, and audio-decode stages run on separate worker threads
@@ -84,6 +90,8 @@ MoviePlayer directly implements the following media functions:
   bitstream buffers submitted to the GPU.
 - AAC-LC spectral Huffman decoding, inverse quantization, stereo tools, TNS,
   IMDCT/window overlap, native channel mixing, and PCM generation.
+- Matroska `A_OPUS` track extraction and `OpusHead` validation before packets
+  are passed to the separately licensed libopus decoder.
 - External and embedded text subtitle decoding, subtitle timing, and subtitle
   composition after video processing.
 - The subtitle worker's built-in MP4/AAC extraction path and 63-tap FIR
@@ -103,8 +111,8 @@ Windows Media Foundation is used only for selected codec backends:
   audio pipeline.
 
 Media Foundation does not parse the MP4, MKV, or AVI container, perform seeking,
-decode AAC, parse HEVC syntax, schedule playback, render subtitles, or manage
-the application UI.
+decode AAC or Opus, parse HEVC syntax, schedule playback, render subtitles, or
+manage the application UI.
 
 ## Hardware acceleration and rendering
 
@@ -119,11 +127,12 @@ Windows decoder and display driver accept the stream, decoding is accelerated;
 otherwise the transform can produce software-decoded NV12 frames that are
 uploaded to textures owned by MoviePlayer's D3D11 device.
 
-### HEVC Main10
+### HEVC Main and Main10
 
 MoviePlayer parses the HEVC bitstream itself but delegates pixel reconstruction
-to the GPU. This path requires the D3D11 HEVC Main10 decoder profile, P010
-output support, and a usable unencrypted DXVA VLD configuration. There is no
+to the GPU. The 8-bit Main path requires the D3D11 HEVC Main decoder profile
+with NV12 output; the 10-bit Main10 path requires the Main10 profile with P010
+output. Both require a usable unencrypted DXVA VLD configuration. There is no
 software HEVC fallback in the current implementation, so opening the stream
 fails with a diagnostic when any of those requirements is missing.
 
@@ -147,10 +156,11 @@ processor interfaces, so hardware-dependent streams can remain unavailable.
 |---|---|---|
 | H.264 decode | Windows transform with DXVA acceleration | Windows transform software decode, then D3D11 texture upload |
 | MPEG-4 Part 2 decode | Installed Windows transform | No separate MoviePlayer decoder |
-| HEVC Main10 decode | First-party parsing plus D3D11/DXVA P010 decode | No software fallback |
+| HEVC Main/Main10 decode | First-party parsing plus D3D11/DXVA NV12 or P010 decode | No software fallback |
 | Video presentation | Hardware D3D11 video processor | Basic WARP rendering where the required interfaces are available |
 | RTX Video VSR | NVIDIA runtime on a compatible RTX GPU and driver | Standard D3D11 scaling |
 | AAC-LC decode | First-party decoder | No alternate decoder |
+| Opus decode | Statically linked libopus 1.5.2 | No alternate decoder |
 | MP3 decode | Windows MP3 transform | No alternate decoder |
 
 ## Local AI subtitles

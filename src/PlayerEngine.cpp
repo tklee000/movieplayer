@@ -4,6 +4,7 @@
 #include "Localization.h"
 #include "codec/audio/aac/AacLcDecoder.h"
 #include "codec/audio/mp3/MfMp3Decoder.h"
+#include "codec/audio/opus/OpusDecoder.h"
 #include "codec/container/MediaDemuxer.h"
 #include "codec/subtitle/TextSubtitleDecoder.h"
 #include "codec/subtitle/VobSubDecoder.h"
@@ -32,6 +33,11 @@ using movieplayer::codec::TrackInfo;
 using movieplayer::codec::TrackType;
 
 namespace {
+
+bool IsSupportedAudioCodec(CodecId codec) {
+    return codec == CodecId::Aac || codec == CodecId::Mp3 ||
+           codec == CodecId::Opus;
+}
 
 class PacketQueue {
 public:
@@ -267,10 +273,15 @@ struct PlayerEngine::Impl {
 
     void BuildDescription() {
         std::wostringstream out;
+        const bool hevcMain10 =
+            videoTrack.codec == CodecId::Hevc &&
+            videoTrack.codecPrivate.size() > 17U &&
+            (videoTrack.codecPrivate[17] & 7U) == 2U;
         const wchar_t* videoName = videoTrack.codec == CodecId::H264
                                        ? L"H.264"
                                        : (videoTrack.codec == CodecId::Hevc
-                                              ? L"HEVC Main 10"
+                                              ? (hevcMain10 ? L"HEVC Main 10"
+                                                            : L"HEVC Main")
                                               : L"MPEG-4 Part 2");
         out << videoName
             << L"  " << width << L"×" << height;
@@ -280,8 +291,13 @@ struct PlayerEngine::Impl {
             out << L"  " << videoTrack.frameRate.ToDouble() << L" fps";
         }
         if (hasAudio) {
+            const wchar_t* audioName =
+                audioTrack.codec == CodecId::Mp3
+                    ? L"MP3 "
+                    : (audioTrack.codec == CodecId::Opus ? L"Opus "
+                                                          : L"AAC-LC ");
             out << L"  ·  "
-                << (audioTrack.codec == CodecId::Mp3 ? L"MP3 " : L"AAC-LC ")
+                << audioName
                 << audioTrack.sampleRate << L" Hz "
                 << audioTrack.channels << L" ch";
         }
@@ -296,6 +312,9 @@ struct PlayerEngine::Impl {
             decoder = std::make_unique<movieplayer::codec::mp3::MfMp3Decoder>();
         } else if (track.codec == CodecId::Aac) {
             decoder = std::make_unique<movieplayer::codec::aac::AacLcDecoder>();
+        } else if (track.codec == CodecId::Opus) {
+            decoder =
+                std::make_unique<movieplayer::codec::opus::OpusDecoder>();
         } else {
             failure = L"The selected audio codec is not supported";
             return nullptr;
@@ -363,11 +382,11 @@ struct PlayerEngine::Impl {
                     hasEmbeddedSubtitle = true;
                     if (track.defaultTrack) selectedDefaultSubtitle = true;
                 }
-            } else if (track.type == TrackType::Audio &&
-                       (track.codec == CodecId::Aac ||
-                        track.codec == CodecId::Mp3)) {
+            } else if (track.type == TrackType::Audio) {
                 audioTracks.push_back(track);
-                if (!hasAudio || (track.defaultTrack && !selectedDefaultAudio)) {
+                if (IsSupportedAudioCodec(track.codec) &&
+                    (!hasAudio ||
+                     (track.defaultTrack && !selectedDefaultAudio))) {
                     audioTrack = track;
                     hasAudio = true;
                     if (track.defaultTrack) selectedDefaultAudio = true;
@@ -692,6 +711,10 @@ struct PlayerEngine::Impl {
             audioTracks.begin(), audioTracks.end(),
             [trackId](const TrackInfo& track) { return track.trackId == trackId; });
         if (found == audioTracks.end()) {
+            SetError(L"The requested audio track is not supported");
+            return false;
+        }
+        if (!IsSupportedAudioCodec(found->codec)) {
             SetError(L"The requested audio track is not supported");
             return false;
         }

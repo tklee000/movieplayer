@@ -369,6 +369,17 @@ struct MkvDemuxer::Impl {
         } else if (trackType == 2) {
             track.info.type = TrackType::Audio;
             if (codecId.rfind("A_AAC", 0) == 0) track.info.codec = CodecId::Aac;
+            else if (codecId == "A_OPUS") {
+                track.info.codec = CodecId::Opus;
+                // Matroska Opus output is always timestamped at 48 kHz.
+                track.info.sampleRate = 48'000;
+            } else if (codecId == "A_AC3") {
+                track.info.codec = CodecId::Ac3;
+            } else if (codecId == "A_EAC3") {
+                track.info.codec = CodecId::Eac3;
+            } else if (codecId.rfind("A_DTS", 0) == 0) {
+                track.info.codec = CodecId::Dts;
+            }
         } else if (trackType == 17) {
             track.info.type = TrackType::Subtitle;
             if (codecId == "S_TEXT/UTF8" || codecId == "S_TEXT/ASCII")

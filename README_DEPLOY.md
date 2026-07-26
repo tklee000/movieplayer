@@ -1,4 +1,4 @@
-# MoviePlayer 0.2 binary package
+# MoviePlayer 0.3 binary package
 
 Run `MoviePlayer.exe` from this folder. Required VC142 runtime DLLs are supplied
 beside the application, so a system-wide Visual C++ 2019 Redistributable
@@ -10,6 +10,7 @@ installation is not required. Keep the supplied VC142 DLLs, `nvngx_vsr.dll`,
 | Layer | Responsibility |
 |---|---|
 | First-party MoviePlayer code | MP4/MKV/AVI parsing, indexing and seeking, HEVC bitstream parsing and DXVA submission, AAC-LC decoding, subtitle handling, channel mixing, and resampling |
+| BSD-licensed libopus 1.5.2 | Matroska mono/stereo Opus decoding |
 | Windows Media Foundation | H.264, MPEG-4 Part 2, and MP3 decoding |
 | D3D11/DXVA/DXGI | Hardware decode services, NV12/P010 video processing, scaling, and presentation |
 | XAudio2 | PCM audio output and the playback master clock |
@@ -22,8 +23,12 @@ VSR automatically falls back to normal D3D11 scaling when unavailable.
 The H.264 and HEVC paths target ordinary consumer video files commonly
 distributed online; they do not implement every profile, level, chroma format,
 bit depth, container combination, or optional feature in those standards.
-Unusual files can be unsupported, and HEVC Main10 requires a compatible
+Unusual files can be unsupported, and HEVC Main/Main10 requires a compatible
 Windows hardware decoder.
+
+Matroska `A_OPUS` mono and stereo tracks are decoded at 48 kHz. AC-3, E-AC-3,
+and DTS tracks appear in the audio-track menu as `[Not Support]`; no decoder or
+codec library for those formats is included in this package.
 
 ## Optional AI subtitles
 
@@ -70,9 +75,10 @@ scaling. The NVIDIA runtime is proprietary and governed by the license in
 
 ## License notices
 
-MoviePlayer first-party code is MIT licensed. Windows components retain their
-Microsoft terms, and NVIDIA components have proprietary terms. whisper.cpp,
-CTranslate2, SentencePiece, their dependencies, and model weights retain their
-own licenses. Read `THIRD_PARTY_NOTICES.md` and every file in `licenses` before
-redistributing this package. Do not redistribute `nvngx_vsr.dll` as a standalone
-product or remove third-party notices.
+MoviePlayer first-party code is MIT licensed. libopus is BSD-3-Clause licensed;
+its complete notice is in `licenses\libopus-LICENSE.txt`. Windows components
+retain their Microsoft terms, and NVIDIA components have proprietary terms.
+whisper.cpp, CTranslate2, SentencePiece, their dependencies, and model weights
+retain their own licenses. Read `THIRD_PARTY_NOTICES.md` and every file in
+`licenses` before redistributing this package. Do not redistribute
+`nvngx_vsr.dll` as a standalone product or remove third-party notices.
