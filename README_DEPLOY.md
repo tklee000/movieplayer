@@ -59,6 +59,11 @@ separately and is selected automatically only for Japanese speech with Korean
 output; missing, incomplete, or failed optional installations fall back to
 M2M100.
 
+The MSI package intentionally excludes the optional Japanese-to-Korean model
+and its installer. The standard Whisper and M2M100 models are downloaded and
+verified automatically during MSI installation. The portable ZIP and source
+tree retain the separate optional installer described below.
+
 To consider that optional model, first read
 `licenses\AI-RUNTIME-AND-MODELS.md`, then run:
 

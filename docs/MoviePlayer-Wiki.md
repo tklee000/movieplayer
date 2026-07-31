@@ -256,6 +256,18 @@ Create the distributable folder with:
 .\create_deploy.cmd
 ```
 
+Create the x64 MSI package with:
+
+```powershell
+.\create_msi.cmd
+```
+
+The MSI downloads and verifies the standard Whisper and M2M100 models during
+installation. It intentionally excludes the optional Japanese-to-Korean model
+and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` with Windows
+as MoviePlayer-supported file types. Windows retains control of the user's
+default-app choice.
+
 ## Privacy, licenses, and temporary data
 
 - Ordinary playback does not require a network connection.

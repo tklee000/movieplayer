@@ -15,6 +15,9 @@ const VideoExtensionList kVideoExtensions = {
     L".mp4",
     L".mkv",
     L".avi",
+    L".ts",
+    L".m2ts",
+    L".mts",
 };
 
 struct EpisodeFileInfo {

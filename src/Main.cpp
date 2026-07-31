@@ -2155,7 +2155,7 @@ private:
         std::vector<wchar_t> path(32768, L'\0');
         const std::wstring filter =
             Localization::Text("dialog.video_files") + L'\0' +
-            L"*.mp4;*.mkv;*.avi" +
+            L"*.mp4;*.mkv;*.avi;*.ts;*.m2ts;*.mts" +
             L'\0' + Localization::Text("dialog.all_files") + L'\0' + L"*.*" +
             L'\0' + L'\0';
         OPENFILENAMEW dialog = {};

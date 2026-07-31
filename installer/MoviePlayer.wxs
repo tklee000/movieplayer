@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Product Id="*"
+           Name="MoviePlayer"
+           Language="1042"
+           Codepage="949"
+           Version="$(var.ProductVersion)"
+           Manufacturer="tklee000"
+           UpgradeCode="{9E6895E4-5AA1-489A-8CAD-1D00BE8EF2DB}">
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Description="MoviePlayer 64-bit installer" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of MoviePlayer is already installed." />
+
+    <Property Id="ARPPRODUCTICON" Value="MoviePlayerIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/tklee000/movieplayer" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="DISABLEADVTSHORTCUTS" Value="1" />
+    <Property Id="SKIP_AI_MODELS" Secure="yes" />
+    <Property Id="AI_MODELS_PATH">
+      <RegistrySearch Id="FindAiModelsPath"
+                      Root="HKLM"
+                      Key="Software\MoviePlayer"
+                      Name="ModelsPath"
+                      Type="raw"
+                      Win64="yes" />
+    </Property>
+
+    <Condition Message="MoviePlayer requires 64-bit Windows.">VersionNT64</Condition>
+
+    <Icon Id="MoviePlayerIcon" SourceFile="$(var.DeployDir)\MoviePlayer.exe" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="MoviePlayer" />
+      </Directory>
+      <Directory Id="CommonProgramsFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="MoviePlayer" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="FileAssociationRegistration"
+                 Guid="{41263884-9782-45A0-983B-B44FFB1225B8}"
+                 Win64="yes">
+        <RegistryValue Root="HKLM" Key="Software\Classes\MoviePlayer.Media"
+                       Type="string" Value="MoviePlayer 동영상" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MoviePlayer.Media\DefaultIcon"
+                       Type="string" Value="[INSTALLFOLDER]MoviePlayer.exe,0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\MoviePlayer.Media\shell\open\command"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]MoviePlayer.exe&quot; &quot;%1&quot;" />
+
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe"
+                       Name="FriendlyAppName" Type="string" Value="MoviePlayer" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\DefaultIcon"
+                       Type="string" Value="[INSTALLFOLDER]MoviePlayer.exe,0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\shell\open\command"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]MoviePlayer.exe&quot; &quot;%1&quot;" />
+
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities"
+                       Name="ApplicationName" Type="string" Value="MoviePlayer" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities"
+                       Name="ApplicationDescription" Type="string"
+                       Value="MP4, MKV, AVI 및 MPEG-TS 동영상 플레이어" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities"
+                       Name="ApplicationIcon" Type="string"
+                       Value="[INSTALLFOLDER]MoviePlayer.exe,0" />
+        <RegistryValue Root="HKLM" Key="Software\RegisteredApplications"
+                       Name="MoviePlayer" Type="string"
+                       Value="Software\MoviePlayer\Capabilities" />
+
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".mp4" Type="string" Value="MoviePlayer.Media" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".mkv" Type="string" Value="MoviePlayer.Media" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".avi" Type="string" Value="MoviePlayer.Media" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".ts" Type="string" Value="MoviePlayer.Media" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".m2ts" Type="string" Value="MoviePlayer.Media" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer\Capabilities\FileAssociations"
+                       Name=".mts" Type="string" Value="MoviePlayer.Media" />
+
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mp4\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mkv\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.avi\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.ts\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.m2ts\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.mts\OpenWithProgids"
+                       Name="MoviePlayer.Media" Type="string" Value="" />
+
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".mp4" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".mkv" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".avi" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".ts" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".m2ts" Type="string" Value="" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\MoviePlayer.exe\SupportedTypes"
+                       Name=".mts" Type="string" Value="" />
+      </Component>
+
+      <Component Id="AiModelMetadata"
+                 Guid="{BDF3FADC-01CD-4A72-AA3E-FFA8A549D9B9}"
+                 Win64="yes">
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer"
+                       Name="ModelsPath" Type="string"
+                       Value="[INSTALLFOLDER]third_party\whisper\models"
+                       KeyPath="yes" />
+        <util:RemoveFolderEx Id="RemoveDownloadedAiModels"
+                             On="uninstall"
+                             Property="AI_MODELS_PATH" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcut"
+                 Guid="{5991DD05-D814-4D78-B95F-2E8087CC560B}"
+                 Win64="yes">
+        <Shortcut Id="MoviePlayerStartMenuShortcut"
+                  Name="MoviePlayer"
+                  Description="MoviePlayer"
+                  Target="[INSTALLFOLDER]MoviePlayer.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\MoviePlayer"
+                       Name="StartMenuShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Complete" Title="MoviePlayer" Level="1" Display="expand">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="FileAssociationRegistration" />
+      <ComponentRef Id="AiModelMetadata" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <SetProperty Id="DownloadAiModels"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\setup_whisper.ps1&quot;"
+                 Sequence="execute"
+                 Before="DownloadAiModels" />
+    <CustomAction Id="DownloadAiModels"
+                  BinaryKey="WixCA"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"
+                  HideTarget="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="DownloadAiModels" Before="InstallFinalize">
+        NOT Installed AND SKIP_AI_MODELS &lt;&gt; "1"
+      </Custom>
+    </InstallExecuteSequence>
+
+    <UIRef Id="WixUI_InstallDir" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <UI>
+      <ProgressText Action="DownloadAiModels">AI 자막 모델을 다운로드하고 검증하는 중입니다. 인터넷 속도에 따라 시간이 걸릴 수 있습니다.</ProgressText>
+    </UI>
+  </Product>
+</Wix>

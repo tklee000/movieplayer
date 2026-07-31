@@ -133,6 +133,19 @@ cmake --build build-vs2019 --config Release --target MovieCodecSmoke
 .\build-vs2019\Release\MovieCodecSmoke.exe "D:\path\video.mp4"
 ```
 
+Create the portable ZIP or the x64 MSI package with:
+
+```powershell
+.\create_release.cmd
+.\create_msi.cmd
+```
+
+The MSI build downloads a pinned, SHA-256-verified WiX toolset into the ignored
+local tool cache. The resulting installer downloads and verifies the standard
+Whisper and M2M100 models during installation, excludes the separately licensed
+Japanese-to-Korean model, and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`,
+and `.mts` as supported MoviePlayer file types.
+
 ## License
 
 MoviePlayer first-party source is licensed under the MIT License. libopus,
