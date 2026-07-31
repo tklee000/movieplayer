@@ -256,6 +256,7 @@ struct PlayerEngine::Impl {
     std::atomic<bool> demuxFinished{false};
     std::atomic<bool> videoFinished{false};
     std::atomic<bool> audioFinished{true};
+    std::atomic<bool> useAudioClock{false};
     std::atomic<bool> forceNextFrame{false};
     std::atomic<double> seekFloor{0.0};
     std::atomic<double> displayedPts{0.0};
@@ -303,7 +304,8 @@ struct PlayerEngine::Impl {
     double CurrentPosition() const {
         if (!opened.load()) return 0.0;
         double result = paused.load() ? pausedPosition.load()
-                                      : (hasAudio && audioOutput.HasClock()
+                                      : (hasAudio && useAudioClock.load() &&
+                                                 audioOutput.HasClock()
                                              ? audioOutput.ClockSeconds()
                                              : ExternalClock());
         if (!std::isfinite(result)) result = 0.0;
@@ -316,12 +318,18 @@ struct PlayerEngine::Impl {
             videoTrack.codec == CodecId::Hevc &&
             videoTrack.codecPrivate.size() > 17U &&
             (videoTrack.codecPrivate[17] & 7U) == 2U;
-        const wchar_t* videoName = videoTrack.codec == CodecId::H264
-                                       ? L"H.264"
-                                       : (videoTrack.codec == CodecId::Hevc
-                                              ? (hevcMain10 ? L"HEVC Main 10"
-                                                            : L"HEVC Main")
-                                              : L"MPEG-4 Part 2");
+        const wchar_t* videoName =
+            videoTrack.codec == CodecId::H264
+                ? L"H.264"
+                : (videoTrack.codec == CodecId::Hevc
+                       ? (hevcMain10 ? L"HEVC Main 10" : L"HEVC Main")
+                       : (videoTrack.codec == CodecId::Mpeg4Part2
+                              ? L"MPEG-4 Part 2"
+                              : (videoTrack.codec == CodecId::Mpeg2Video
+                                     ? L"MPEG-2"
+                                     : (videoTrack.codec == CodecId::Wmv3
+                                            ? L"WMV3"
+                                            : L"Microsoft MPEG-4 v3"))));
         out << videoName
             << L"  " << width << L"×" << height;
         if (videoTrack.frameRate.IsValid()) {
@@ -420,6 +428,7 @@ struct PlayerEngine::Impl {
         }
         bool foundVideo = false;
         hasAudio = false;
+        useAudioClock.store(false);
         hasEmbeddedSubtitle = false;
         audioTracks.clear();
         subtitleTracks.clear();
@@ -428,7 +437,10 @@ struct PlayerEngine::Impl {
         for (const TrackInfo& track : demuxer->Tracks()) {
             if (!foundVideo && track.type == TrackType::Video &&
                 (track.codec == CodecId::H264 || track.codec == CodecId::Hevc ||
-                 track.codec == CodecId::Mpeg4Part2)) {
+                 track.codec == CodecId::Mpeg4Part2 ||
+                 track.codec == CodecId::Mpeg2Video ||
+                 track.codec == CodecId::Wmv3 ||
+                 track.codec == CodecId::Msmpeg4v3)) {
                 videoTrack = track;
                 foundVideo = true;
             } else if (track.type == TrackType::Subtitle &&
@@ -469,7 +481,10 @@ struct PlayerEngine::Impl {
             return false;
         }
         if (videoTrack.codec == CodecId::H264 ||
-            videoTrack.codec == CodecId::Mpeg4Part2) {
+            videoTrack.codec == CodecId::Mpeg4Part2 ||
+            videoTrack.codec == CodecId::Mpeg2Video ||
+            videoTrack.codec == CodecId::Wmv3 ||
+            videoTrack.codec == CodecId::Msmpeg4v3) {
             videoDecoder =
                 std::make_unique<movieplayer::codec::h264::MfH264Decoder>();
         } else {
@@ -525,6 +540,7 @@ struct PlayerEngine::Impl {
             demuxer.reset();
         }
         hasAudio = false;
+        useAudioClock.store(false);
         hasEmbeddedSubtitle = false;
         audioTracks.clear();
         subtitleTracks.clear();
@@ -548,6 +564,7 @@ struct PlayerEngine::Impl {
         demuxFinished.store(false);
         videoFinished.store(false);
         audioFinished.store(!hasAudio);
+        useAudioClock.store(hasAudio);
         seekFloor.store(target);
         displayedPts.store(target);
         forceNextFrame.store(true);
@@ -705,16 +722,26 @@ struct PlayerEngine::Impl {
         const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         EncodedSample sample;
         bool eof = false;
+        unsigned consecutiveDecodeFailures = 0;
+        std::wstring lastDecodeError;
         while (!abort.load() && audioPackets.Pop(sample, eof)) {
             if (eof) break;
             AudioFrame frame;
             if (!audioDecoder->Decode(sample, frame)) {
+                // Damaged media often contains only one malformed audio
+                // packet.  Reset the native decoder state and continue so
+                // video playback and later valid audio are preserved.
+                lastDecodeError = audioDecoder->LastError();
+                audioDecoder->Reset();
+                if (++consecutiveDecodeFailures < 64U) continue;
+                useAudioClock.store(false);
                 if (!abort.load()) {
                     SetAsyncError(Localization::Format(
-                        "error.audio_decode", {{L"error", audioDecoder->LastError()}}));
+                        "error.audio_decode", {{L"error", lastDecodeError}}));
                 }
                 break;
             }
+            consecutiveDecodeFailures = 0;
             if (frame.samples.empty()) continue;
             const double frameDuration = frame.channels > 0 && frame.sampleRate > 0
                                              ? static_cast<double>(frame.samples.size() /
@@ -724,6 +751,7 @@ struct PlayerEngine::Impl {
             if (frame.pts + frameDuration < seekFloor.load() - 0.010) continue;
             const auto pcm = FloatToPcm16(frame);
             if (!audioOutput.Submit(pcm.data(), pcm.size(), frame.pts)) {
+                useAudioClock.store(false);
                 if (!abort.load()) {
                     SetAsyncError(Localization::Format(
                         "error.audio_output_submit",

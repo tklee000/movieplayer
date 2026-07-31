@@ -5,6 +5,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfobjects.h>
+#include <mfreadwrite.h>
 #include <mftransform.h>
 #include <wmcodecdsp.h>
 #include <wrl/client.h>
@@ -53,6 +54,123 @@ std::uint32_t ReadBigEndianLength(const std::uint8_t* data, unsigned size) {
     return result;
 }
 
+class SpsBitCursor {
+public:
+    explicit SpsBitCursor(const std::vector<std::uint8_t>& bits)
+        : bits_(bits) {}
+
+    std::size_t Position() const noexcept { return position_; }
+
+    bool Read(unsigned count, std::uint32_t& value) {
+        value = 0;
+        if (count > 32 || count > bits_.size() - position_) return false;
+        for (unsigned i = 0; i < count; ++i)
+            value = (value << 1U) | bits_[position_++];
+        return true;
+    }
+
+    bool ReadUe(std::uint32_t& value, std::size_t* begin = nullptr,
+                std::size_t* end = nullptr) {
+        if (begin) *begin = position_;
+        unsigned zeros = 0;
+        while (position_ < bits_.size() && bits_[position_] == 0) {
+            ++zeros;
+            ++position_;
+            if (zeros > 31) return false;
+        }
+        if (position_ >= bits_.size()) return false;
+        ++position_;
+        std::uint32_t suffix = 0;
+        if (zeros != 0 && !Read(zeros, suffix)) return false;
+        value = ((std::uint32_t{1} << zeros) - 1U) + suffix;
+        if (end) *end = position_;
+        return true;
+    }
+
+private:
+    const std::vector<std::uint8_t>& bits_;
+    std::size_t position_ = 0;
+};
+
+std::vector<std::uint8_t> EbspToBits(const std::uint8_t* bytes,
+                                     std::size_t size) {
+    std::vector<std::uint8_t> bits;
+    bits.reserve(size * 8U);
+    unsigned zeros = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        if (zeros >= 2 && bytes[i] == 3) {
+            zeros = 0;
+            continue;
+        }
+        for (int bit = 7; bit >= 0; --bit)
+            bits.push_back((bytes[i] >> bit) & 1U);
+        zeros = bytes[i] == 0 ? zeros + 1U : 0U;
+    }
+    return bits;
+}
+
+std::vector<std::uint8_t> BitsToEbsp(
+    const std::vector<std::uint8_t>& bits) {
+    std::vector<std::uint8_t> rbsp((bits.size() + 7U) / 8U, 0);
+    for (std::size_t i = 0; i < bits.size(); ++i)
+        rbsp[i / 8U] |= bits[i] << (7U - i % 8U);
+    std::vector<std::uint8_t> ebsp;
+    ebsp.reserve(rbsp.size() + rbsp.size() / 32U);
+    unsigned zeros = 0;
+    for (std::uint8_t byte : rbsp) {
+        if (zeros >= 2 && byte <= 3) {
+            ebsp.push_back(3);
+            zeros = 0;
+        }
+        ebsp.push_back(byte);
+        zeros = byte == 0 ? zeros + 1U : 0U;
+    }
+    return ebsp;
+}
+
+bool RewriteHigh10Sps(const std::uint8_t* nal, std::size_t size,
+                      std::vector<std::uint8_t>& rewritten) {
+    rewritten.clear();
+    if (size < 5 || (nal[0] & 0x1fU) != 7U) return false;
+    std::vector<std::uint8_t> bits = EbspToBits(nal + 1, size - 1);
+    SpsBitCursor cursor(bits);
+    std::uint32_t profile = 0, ignored = 0, chroma = 0;
+    if (!cursor.Read(8, profile) || !cursor.Read(8, ignored) ||
+        !cursor.Read(8, ignored) || !cursor.ReadUe(ignored) ||
+        !cursor.ReadUe(chroma)) {
+        return false;
+    }
+    if (profile != 110 || chroma != 1) return false;
+    std::size_t lumaBegin = 0, lumaEnd = 0;
+    std::size_t chromaBegin = 0, chromaEnd = 0;
+    std::uint32_t lumaDepth = 0, chromaDepth = 0;
+    if (!cursor.ReadUe(lumaDepth, &lumaBegin, &lumaEnd) ||
+        !cursor.ReadUe(chromaDepth, &chromaBegin, &chromaEnd) ||
+        lumaDepth != 2 || chromaDepth != 2 ||
+        lumaEnd > chromaBegin || chromaEnd > bits.size()) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> normalized;
+    normalized.reserve(bits.size());
+    normalized.insert(normalized.end(), bits.begin(), bits.begin() + lumaBegin);
+    normalized.push_back(1);  // bit_depth_luma_minus8 = ue(0)
+    normalized.insert(normalized.end(), bits.begin() + lumaEnd,
+                      bits.begin() + chromaBegin);
+    normalized.push_back(1);  // bit_depth_chroma_minus8 = ue(0)
+    normalized.insert(normalized.end(), bits.begin() + chromaEnd, bits.end());
+    // High 4:2:0 8-bit has the same coding tools as High 10 after the two
+    // bit-depth fields are normalized. The QpBdOffset difference makes the
+    // Windows decoder's reconstruction the 8-bit-scaled counterpart.
+    for (unsigned bit = 0; bit < 8; ++bit)
+        normalized[bit] = (100U >> (7U - bit)) & 1U;
+
+    rewritten.push_back(nal[0]);
+    std::vector<std::uint8_t> payload = BitsToEbsp(normalized);
+    rewritten.insert(rewritten.end(), payload.begin(), payload.end());
+    return true;
+}
+
 LONGLONG SecondsToMediaTime(double seconds) {
     if (!std::isfinite(seconds)) return 0;
     const double scaled = seconds * kHundredNanosecondsPerSecond;
@@ -74,6 +192,7 @@ struct MfH264Decoder::Impl {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> immediateContext;
     ComPtr<IMFTransform> transform;
+    ComPtr<IMFSourceReader> sourceReader;
     ComPtr<IMFMediaType> outputType;
     std::vector<Surface> surfaces;
     // The Media Foundation decoder emits H.264 pictures in display order, but
@@ -89,6 +208,7 @@ struct MfH264Decoder::Impl {
         pendingPresentationTimes;
     TrackInfo track;
     std::vector<std::uint8_t> parameterSets;
+    std::vector<std::uint8_t> mpeg4SequenceHeader;
     std::wstring description;
     std::wstring error;
     unsigned nalLengthSize = 0;
@@ -97,12 +217,17 @@ struct MfH264Decoder::Impl {
     LONG outputStride = 0;
     DWORD outputStreamFlags = 0;
     DWORD outputBufferSize = 0;
+    GUID outputSubtype = MFVideoFormat_NV12;
     bool parameterSetsPending = true;
+    bool h264 = true;
     bool mpeg4Part2 = false;
     bool drainStarted = false;
     bool drainComplete = false;
     bool mediaFoundationStarted = false;
     bool comInitialized = false;
+    bool sourceReaderNeedsSeek = true;
+    DWORD sourceReaderStream =
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 
     ~Impl() { Shutdown(); }
 
@@ -115,6 +240,7 @@ struct MfH264Decoder::Impl {
         surfaces.clear();
         pendingPresentationTimes = {};
         outputType.Reset();
+        sourceReader.Reset();
         transform.Reset();
         immediateContext.Reset();
         device.Reset();
@@ -131,6 +257,7 @@ struct MfH264Decoder::Impl {
         outputStreamFlags = outputBufferSize = 0;
         drainStarted = false;
         drainComplete = false;
+        sourceReaderNeedsSeek = true;
     }
 
     bool ParseConfiguration(const std::vector<std::uint8_t>& configuration) {
@@ -161,9 +288,19 @@ struct MfH264Decoder::Impl {
                                 L" in avcC");
                 }
                 parameterSets.insert(parameterSets.end(), {0, 0, 0, 1});
-                parameterSets.insert(parameterSets.end(),
-                                     configuration.begin() + position,
-                                     configuration.begin() + position + size);
+                std::vector<std::uint8_t> normalizedSps;
+                if (expectedType == 7 &&
+                    RewriteHigh10Sps(configuration.data() + position, size,
+                                     normalizedSps)) {
+                    parameterSets.insert(parameterSets.end(),
+                                         normalizedSps.begin(),
+                                         normalizedSps.end());
+                } else {
+                    parameterSets.insert(parameterSets.end(),
+                                         configuration.begin() + position,
+                                         configuration.begin() + position +
+                                             size);
+                }
                 position += size;
             }
             return true;
@@ -183,17 +320,45 @@ struct MfH264Decoder::Impl {
         if (parameterSetsPending || sample.sync) {
             annexB.insert(annexB.end(), parameterSets.begin(), parameterSets.end());
         }
+        const auto hasStartCode = [](const std::vector<std::uint8_t>& bytes) {
+            for (std::size_t i = 0; i + 3 < bytes.size(); ++i) {
+                if (bytes[i] == 0 && bytes[i + 1] == 0 &&
+                    (bytes[i + 2] == 1 ||
+                     (bytes[i + 2] == 0 && bytes[i + 3] == 1))) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (hasStartCode(sample.bytes)) {
+            annexB.insert(annexB.end(), sample.bytes.begin(),
+                          sample.bytes.end());
+            return true;
+        }
+        if (nalLengthSize == 0) {
+            return Fail(
+                L"The AVI H.264 access unit has neither Annex-B start codes "
+                L"nor an avcC NAL-length description");
+        }
         std::size_t position = 0;
         unsigned nalCount = 0;
         while (position < sample.bytes.size()) {
             if (sample.bytes.size() - position < nalLengthSize) {
-                return Fail(L"A truncated H.264 NAL length was found in an MP4 sample");
+                // A few partially downloaded MP4s have an isolated damaged
+                // access unit while the following sync sample is intact.
+                // Keep complete NALs from this unit, or drop only this unit,
+                // instead of terminating the entire playback session.
+                if (nalCount == 0) annexB.clear();
+                error.clear();
+                return true;
             }
             const std::uint32_t size = ReadBigEndianLength(
                 sample.bytes.data() + position, nalLengthSize);
             position += nalLengthSize;
             if (size == 0 || size > sample.bytes.size() - position) {
-                return Fail(L"An invalid H.264 NAL size was found in an MP4 sample");
+                if (nalCount == 0) annexB.clear();
+                error.clear();
+                return true;
             }
             annexB.insert(annexB.end(), {0, 0, 0, 1});
             annexB.insert(annexB.end(), sample.bytes.begin() + position,
@@ -201,34 +366,77 @@ struct MfH264Decoder::Impl {
             position += size;
             ++nalCount;
         }
-        if (nalCount == 0) return Fail(L"The H.264 MP4 sample contains no NAL units");
+        if (nalCount == 0)
+            return Fail(L"The H.264 access unit contains no NAL units");
         return true;
+    }
+
+    GUID InputSubtype() const {
+        switch (track.codec) {
+        case CodecId::H264:
+            return MFVideoFormat_H264;
+        case CodecId::Mpeg4Part2:
+            return MFVideoFormat_MP4V;
+        case CodecId::Mpeg2Video:
+            return MFVideoFormat_MPEG2;
+        case CodecId::Wmv3:
+            return MFVideoFormat_WMV3;
+        case CodecId::Msmpeg4v3:
+            return MFVideoFormat_MP43;
+        default:
+            return GUID_NULL;
+        }
+    }
+
+    const wchar_t* CodecName() const {
+        switch (track.codec) {
+        case CodecId::H264:
+            return L"H.264";
+        case CodecId::Mpeg4Part2:
+            return L"MPEG-4 Part 2";
+        case CodecId::Mpeg2Video:
+            return L"MPEG-2";
+        case CodecId::Wmv3:
+            return L"WMV3";
+        case CodecId::Msmpeg4v3:
+            return L"Microsoft MPEG-4 v3";
+        default:
+            return L"video";
+        }
     }
 
     bool ConfigureOutputType() {
         ComPtr<IMFMediaType> selected;
+        ComPtr<IMFMediaType> yuy2Fallback;
         for (DWORD index = 0;; ++index) {
             ComPtr<IMFMediaType> candidate;
             const HRESULT available =
                 transform->GetOutputAvailableType(0, index, &candidate);
             if (available == MF_E_NO_MORE_TYPES) break;
             if (FAILED(available)) {
-                return Fail(HresultText(L"GetOutputAvailableType(H.264)",
+                return Fail(HresultText(L"GetOutputAvailableType(video)",
                                         available));
             }
             GUID subtype = {};
-            if (SUCCEEDED(candidate->GetGUID(MF_MT_SUBTYPE, &subtype)) &&
-                subtype == MFVideoFormat_NV12) {
-                selected = candidate;
-                break;
+            if (SUCCEEDED(candidate->GetGUID(MF_MT_SUBTYPE, &subtype))) {
+                if (subtype == MFVideoFormat_NV12) {
+                    selected = candidate;
+                    break;
+                }
+                if (subtype == MFVideoFormat_YUY2 && !yuy2Fallback)
+                    yuy2Fallback = candidate;
             }
         }
+        if (!selected) selected = yuy2Fallback;
         if (!selected) {
-            return Fail(L"The Windows H.264 decoder does not expose NV12 output");
+            return Fail(
+                std::wstring(L"The Windows ") + CodecName() +
+                L" decoder does not expose NV12 or YUY2 output");
         }
+        selected->GetGUID(MF_MT_SUBTYPE, &outputSubtype);
         HRESULT hr = transform->SetOutputType(0, selected.Get(), 0);
         if (FAILED(hr)) {
-            return Fail(HresultText(L"SetOutputType(H.264 NV12)", hr));
+            return Fail(HresultText(L"SetOutputType(video NV12)", hr));
         }
 
         UINT32 width = 0;
@@ -241,18 +449,20 @@ struct MfH264Decoder::Impl {
         }
         if (width == 0 || height == 0 || (width & 1U) != 0 ||
             (height & 1U) != 0) {
-            return Fail(L"The H.264 decoder returned invalid NV12 dimensions");
+            return Fail(L"The video decoder returned invalid NV12 dimensions");
         }
         UINT32 stride = 0;
+        const UINT32 minimumStride =
+            outputSubtype == MFVideoFormat_YUY2 ? width * 2U : width;
         if (FAILED(selected->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride)) ||
-            stride < width) {
-            stride = width;
+            stride < minimumStride) {
+            stride = minimumStride;
         }
 
         MFT_OUTPUT_STREAM_INFO streamInfo = {};
         hr = transform->GetOutputStreamInfo(0, &streamInfo);
         if (FAILED(hr)) {
-            return Fail(HresultText(L"GetOutputStreamInfo(H.264)", hr));
+            return Fail(HresultText(L"GetOutputStreamInfo(video)", hr));
         }
         outputType = selected;
         outputWidth = width;
@@ -266,9 +476,21 @@ struct MfH264Decoder::Impl {
 
     bool CreateTransform() {
         HRESULT hr = E_FAIL;
-        if (mpeg4Part2) {
+        if (track.codec == CodecId::Wmv3) {
+            hr = CoCreateInstance(CLSID_CWMVDecMediaObject, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&transform));
+        } else if (track.codec == CodecId::Msmpeg4v3) {
+            hr = CoCreateInstance(CLSID_CMpeg43DecMediaObject, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&transform));
+        } else if (track.codec == CodecId::Mpeg2Video) {
+            hr = CoCreateInstance(CLSID_MSMPEGDecoderMFT, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&transform));
+        } else if (!h264) {
             MFT_REGISTER_TYPE_INFO inputRegistration = {
-                MFMediaType_Video, MFVideoFormat_MP4V};
+                MFMediaType_Video, InputSubtype()};
             MFT_REGISTER_TYPE_INFO outputRegistration = {
                 MFMediaType_Video, MFVideoFormat_NV12};
             IMFActivate** activations = nullptr;
@@ -284,7 +506,7 @@ struct MfH264Decoder::Impl {
             }
             for (UINT32 i = 0; i < activationCount; ++i) activations[i]->Release();
             CoTaskMemFree(activations);
-            if (!transform) {
+            if (!transform && mpeg4Part2) {
                 hr = CoCreateInstance(CLSID_CMpeg4sDecMFT, nullptr,
                                       CLSCTX_INPROC_SERVER,
                                       IID_PPV_ARGS(&transform));
@@ -295,10 +517,7 @@ struct MfH264Decoder::Impl {
                                   IID_PPV_ARGS(&transform));
         }
         if (FAILED(hr)) {
-            return Fail(HresultText(mpeg4Part2
-                                        ? L"Create Windows MPEG-4 Part 2 decoder"
-                                        : L"Create Windows H.264 decoder",
-                                    hr));
+            return Fail(HresultText(L"Create Windows video decoder", hr));
         }
 
         ComPtr<ICodecAPI> codecApi;
@@ -308,7 +527,7 @@ struct MfH264Decoder::Impl {
             acceleration.boolVal = VARIANT_TRUE;
             // This is a preference. The Microsoft transform automatically
             // falls back to software when the driver cannot decode the stream.
-            if (!mpeg4Part2) {
+            if (h264) {
                 codecApi->SetValue(&CODECAPI_AVDecVideoAcceleration_H264,
                                    &acceleration);
             }
@@ -318,16 +537,16 @@ struct MfH264Decoder::Impl {
         hr = MFCreateMediaType(&inputType);
         if (FAILED(hr) ||
             FAILED(inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
-            FAILED(inputType->SetGUID(
-                MF_MT_SUBTYPE,
-                mpeg4Part2 ? MFVideoFormat_MP4V : MFVideoFormat_H264)) ||
+            FAILED(inputType->SetGUID(MF_MT_SUBTYPE, InputSubtype())) ||
             FAILED(MFSetAttributeSize(inputType.Get(), MF_MT_FRAME_SIZE,
                                       static_cast<UINT32>(track.width),
-                                      static_cast<UINT32>(track.height))) ||
-            FAILED(inputType->SetUINT32(MF_MT_INTERLACE_MODE,
-                                        MFVideoInterlace_Progressive))) {
+                                      static_cast<UINT32>(track.height)))) {
             return Fail(FAILED(hr) ? HresultText(L"MFCreateMediaType(H.264)", hr)
                                    : L"Could not configure the H.264 input media type");
+        }
+        if (track.codec != CodecId::Mpeg2Video) {
+            inputType->SetUINT32(MF_MT_INTERLACE_MODE,
+                                 MFVideoInterlace_Progressive);
         }
         if (track.frameRate.IsValid() && track.frameRate.numerator <= UINT_MAX &&
             track.frameRate.denominator <= UINT_MAX) {
@@ -344,16 +563,42 @@ struct MfH264Decoder::Impl {
                                 static_cast<UINT32>(sar.numerator),
                                 static_cast<UINT32>(sar.denominator));
         }
-        if (mpeg4Part2 && !track.codecPrivate.empty()) {
+        if (!h264 && track.codec != CodecId::Mpeg2Video &&
+            !track.codecPrivate.empty()) {
             inputType->SetBlob(MF_MT_MPEG_SEQUENCE_HEADER,
                                track.codecPrivate.data(),
                                static_cast<UINT32>(track.codecPrivate.size()));
+            if (track.codec == CodecId::Wmv3) {
+                inputType->SetBlob(
+                    MF_MT_USER_DATA, track.codecPrivate.data(),
+                    static_cast<UINT32>(track.codecPrivate.size()));
+            }
         }
+        inputType->SetUINT32(MF_MT_COMPRESSED, TRUE);
+        inputType->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, FALSE);
+        inputType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, FALSE);
         hr = transform->SetInputType(0, inputType.Get(), 0);
+        if (FAILED(hr) && track.codec == CodecId::Mpeg2Video) {
+            // The system MPEG-2 MFT documents a minimal elementary-stream
+            // media type and rejects some otherwise normal container hints on
+            // particular Windows builds.
+            ComPtr<IMFMediaType> minimalType;
+            if (SUCCEEDED(MFCreateMediaType(&minimalType)) &&
+                SUCCEEDED(minimalType->SetGUID(MF_MT_MAJOR_TYPE,
+                                               MFMediaType_Video)) &&
+                SUCCEEDED(minimalType->SetGUID(MF_MT_SUBTYPE,
+                                               MFVideoFormat_MPEG2))) {
+                if (!track.codecPrivate.empty()) {
+                    minimalType->SetBlob(
+                        MF_MT_MPEG_SEQUENCE_HEADER,
+                        track.codecPrivate.data(),
+                        static_cast<UINT32>(track.codecPrivate.size()));
+                }
+                hr = transform->SetInputType(0, minimalType.Get(), 0);
+            }
+        }
         if (FAILED(hr)) {
-            return Fail(HresultText(mpeg4Part2 ? L"SetInputType(MPEG-4 Part 2)"
-                                              : L"SetInputType(H.264)",
-                                    hr));
+            return Fail(HresultText(L"SetInputType(video)", hr));
         }
         if (!ConfigureOutputType()) return false;
 
@@ -368,16 +613,91 @@ struct MfH264Decoder::Impl {
         return true;
     }
 
+    bool CreateSourceReader() {
+        ComPtr<IMFAttributes> attributes;
+        HRESULT hr = MFCreateAttributes(&attributes, 2);
+        if (FAILED(hr))
+            return Fail(HresultText(L"Create video reader attributes", hr));
+        attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+        hr = MFCreateSourceReaderFromURL(track.sourcePath.c_str(),
+                                         attributes.Get(), &sourceReader);
+        if (FAILED(hr))
+            return Fail(HresultText(L"Open video source reader", hr));
+
+        sourceReader->SetStreamSelection(
+            static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
+        bool found = false;
+        for (DWORD stream = 0; stream < 128 && !found; ++stream) {
+            ComPtr<IMFMediaType> nativeType;
+            hr = sourceReader->GetNativeMediaType(stream, 0, &nativeType);
+            if (hr == MF_E_INVALIDSTREAMNUMBER) break;
+            if (FAILED(hr)) continue;
+            GUID major = {};
+            if (SUCCEEDED(nativeType->GetGUID(MF_MT_MAJOR_TYPE, &major)) &&
+                major == MFMediaType_Video) {
+                sourceReaderStream = stream;
+                found = true;
+            }
+        }
+        if (!found)
+            return Fail(L"The source reader found no video stream");
+        sourceReader->SetStreamSelection(sourceReaderStream, TRUE);
+
+        ComPtr<IMFMediaType> decodedType;
+        hr = MFCreateMediaType(&decodedType);
+        if (FAILED(hr) ||
+            FAILED(decodedType->SetGUID(MF_MT_MAJOR_TYPE,
+                                        MFMediaType_Video)) ||
+            FAILED(decodedType->SetGUID(MF_MT_SUBTYPE,
+                                        MFVideoFormat_NV12))) {
+            return Fail(L"Could not create the MPEG-2 NV12 output type");
+        }
+        hr = sourceReader->SetCurrentMediaType(sourceReaderStream, nullptr,
+                                               decodedType.Get());
+        if (FAILED(hr))
+            return Fail(HresultText(L"Configure video source reader", hr));
+        ComPtr<IMFMediaType> current;
+        hr = sourceReader->GetCurrentMediaType(sourceReaderStream, &current);
+        if (FAILED(hr))
+            return Fail(HresultText(L"Read video output type", hr));
+        UINT32 width = 0, height = 0;
+        if (FAILED(MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &width,
+                                      &height)) ||
+            width == 0 || height == 0) {
+            width = static_cast<UINT32>(track.width);
+            height = static_cast<UINT32>(track.height);
+        }
+        outputWidth = width;
+        outputHeight = height;
+        outputStride = static_cast<LONG>(width);
+        outputSubtype = MFVideoFormat_NV12;
+        outputType = current;
+        surfaces.clear();
+        sourceReaderNeedsSeek = true;
+        description = std::wstring(L"Windows Media Foundation ") +
+                      CodecName() + L" source reader (NV12)";
+        error.clear();
+        return true;
+    }
+
     bool Initialize(ID3D11Device* sharedDevice, const TrackInfo& sourceTrack) {
         Shutdown();
         error.clear();
         description.clear();
         parameterSets.clear();
+        mpeg4SequenceHeader.clear();
         parameterSetsPending = true;
         nalLengthSize = 0;
+        h264 = sourceTrack.codec == CodecId::H264;
         mpeg4Part2 = sourceTrack.codec == CodecId::Mpeg4Part2;
+        const bool supported =
+            h264 || mpeg4Part2 ||
+            sourceTrack.codec == CodecId::Mpeg2Video ||
+            sourceTrack.codec == CodecId::Wmv3 ||
+            sourceTrack.codec == CodecId::Msmpeg4v3;
         if (!sharedDevice ||
-            (sourceTrack.codec != CodecId::H264 && !mpeg4Part2) ||
+            !supported ||
             sourceTrack.width <= 0 || sourceTrack.height <= 0) {
             return Fail(L"The Media Foundation video decoder received an invalid track");
         }
@@ -394,25 +714,45 @@ struct MfH264Decoder::Impl {
         mediaFoundationStarted = true;
 
         track = sourceTrack;
+        if (mpeg4Part2) RememberMpeg4SequenceHeader(track.codecPrivate);
         device = sharedDevice;
         device->GetImmediateContext(&immediateContext);
         if (!immediateContext) return Fail(L"The D3D11 device has no immediate context");
-        if ((!mpeg4Part2 && !ParseConfiguration(track.codecPrivate)) ||
+        const bool preferSourceReader =
+            !track.sourcePath.empty() &&
+            (sourceTrack.codec == CodecId::Mpeg2Video ||
+             sourceTrack.codec == CodecId::Wmv3 ||
+             sourceTrack.codec == CodecId::Msmpeg4v3 ||
+             (sourceTrack.codec == CodecId::Mpeg4Part2 &&
+              sourceTrack.sampleEntry != "mp4v"));
+        if (preferSourceReader && CreateSourceReader()) {
+            return true;
+        }
+        sourceReader.Reset();
+        error.clear();
+        if ((h264 && !track.codecPrivate.empty() &&
+             !ParseConfiguration(track.codecPrivate)) ||
             !CreateTransform()) {
             return false;
         }
 
         std::wostringstream label;
-        if (mpeg4Part2) {
-            label << L"Windows Media Foundation MPEG-4 Part 2 ("
+        if (!h264) {
+            label << L"Windows Media Foundation " << CodecName() << L" ("
                   << std::wstring(track.sampleEntry.begin(), track.sampleEntry.end())
                   << L", NV12)";
         } else {
-            label << L"Windows Media Foundation H.264 (NV12, DXVA when available)"
-                  << L" - High-compatible profile "
-                  << static_cast<unsigned>(track.codecPrivate[1]) << L", level "
-                  << static_cast<unsigned>(track.codecPrivate[3]) / 10 << L"."
-                  << static_cast<unsigned>(track.codecPrivate[3]) % 10;
+            label << L"Windows Media Foundation H.264 (NV12, DXVA when available)";
+            if (track.codecPrivate.size() >= 4) {
+                label << L" - profile "
+                      << static_cast<unsigned>(track.codecPrivate[1])
+                      << L", level "
+                      << static_cast<unsigned>(track.codecPrivate[3]) / 10
+                      << L"."
+                      << static_cast<unsigned>(track.codecPrivate[3]) % 10;
+            } else {
+                label << L" - Annex-B";
+            }
         }
         description = label.str();
         error.clear();
@@ -451,6 +791,40 @@ struct MfH264Decoder::Impl {
         return true;
     }
 
+    bool RememberMpeg4SequenceHeader(
+        const std::vector<std::uint8_t>& bytes) {
+        std::size_t headerStart = bytes.size();
+        std::size_t vopStart = bytes.size();
+        bool completeSequenceHeader = false;
+        for (std::size_t i = 0; i + 4U <= bytes.size(); ++i) {
+            if (bytes[i] != 0 || bytes[i + 1U] != 0 ||
+                bytes[i + 2U] != 1) {
+                continue;
+            }
+            const std::uint8_t code = bytes[i + 3U];
+            if (code == 0xb6) {
+                vopStart = i;
+                break;
+            }
+            if (code == 0xb0 || code == 0xb5)
+                completeSequenceHeader = true;
+            if (headerStart == bytes.size() &&
+                (code == 0xb0 || code == 0xb5 ||
+                 (code >= 0x20 && code <= 0x2f))) {
+                headerStart = i;
+            }
+        }
+        if (headerStart == bytes.size() || headerStart >= vopStart)
+            return false;
+        const std::size_t headerEnd =
+            vopStart == bytes.size() ? bytes.size() : vopStart;
+        if (mpeg4SequenceHeader.empty() || completeSequenceHeader) {
+            mpeg4SequenceHeader.assign(bytes.begin() + headerStart,
+                                       bytes.begin() + headerEnd);
+        }
+        return completeSequenceHeader;
+    }
+
     int AcquireSurface() {
         for (std::size_t i = 0; i < surfaces.size(); ++i) {
             if (surfaces[i].displayedFrame.expired()) return static_cast<int>(i);
@@ -487,7 +861,8 @@ struct MfH264Decoder::Impl {
         nv12.resize(lumaBytes + lumaBytes / 2U);
 
         ComPtr<IMF2DBuffer> twoDimensional;
-        if (SUCCEEDED(buffer.As(&twoDimensional))) {
+        if (outputSubtype == MFVideoFormat_NV12 &&
+            SUCCEEDED(buffer.As(&twoDimensional))) {
             BYTE* scanline = nullptr;
             LONG pitch = 0;
             hr = twoDimensional->Lock2D(&scanline, &pitch);
@@ -518,24 +893,68 @@ struct MfH264Decoder::Impl {
             return Fail(FAILED(hr) ? HresultText(L"Lock H.264 output buffer", hr)
                                    : L"The H.264 output buffer is empty");
         }
+        const LONG minimumStride =
+            outputSubtype == MFVideoFormat_YUY2
+                ? static_cast<LONG>(outputWidth * 2U)
+                : static_cast<LONG>(outputWidth);
         const std::size_t stride = static_cast<std::size_t>(
-            std::max<LONG>(outputStride, static_cast<LONG>(outputWidth)));
-        const std::size_t required = stride * outputHeight * 3U / 2U;
+            std::max<LONG>(outputStride, minimumStride));
+        const std::size_t required =
+            outputSubtype == MFVideoFormat_YUY2
+                ? stride * outputHeight
+                : stride * outputHeight * 3U / 2U;
         if (length < required) {
             buffer->Unlock();
             return Fail(L"The H.264 NV12 output buffer is truncated");
         }
-        for (UINT y = 0; y < outputHeight; ++y) {
-            std::memcpy(nv12.data() + static_cast<std::size_t>(y) * outputWidth,
-                        source + static_cast<std::size_t>(y) * stride,
-                        outputWidth);
-        }
-        const BYTE* chroma = source + stride * outputHeight;
-        for (UINT y = 0; y < outputHeight / 2U; ++y) {
-            std::memcpy(nv12.data() + lumaBytes +
-                            static_cast<std::size_t>(y) * outputWidth,
-                        chroma + static_cast<std::size_t>(y) * stride,
-                        outputWidth);
+        if (outputSubtype == MFVideoFormat_YUY2) {
+            for (UINT y = 0; y < outputHeight; ++y) {
+                const BYTE* row =
+                    source + static_cast<std::size_t>(y) * stride;
+                BYTE* luma =
+                    nv12.data() + static_cast<std::size_t>(y) * outputWidth;
+                for (UINT x = 0; x < outputWidth; x += 2U) {
+                    luma[x] = row[x * 2U];
+                    luma[x + 1U] = row[x * 2U + 2U];
+                }
+            }
+            for (UINT y = 0; y < outputHeight; y += 2U) {
+                const BYTE* first =
+                    source + static_cast<std::size_t>(y) * stride;
+                const BYTE* second =
+                    source +
+                    static_cast<std::size_t>(
+                        std::min(y + 1U, outputHeight - 1U)) *
+                        stride;
+                BYTE* chroma =
+                    nv12.data() + lumaBytes +
+                    static_cast<std::size_t>(y / 2U) * outputWidth;
+                for (UINT x = 0; x < outputWidth; x += 2U) {
+                    chroma[x] = static_cast<BYTE>(
+                        (static_cast<unsigned>(first[x * 2U + 1U]) +
+                         second[x * 2U + 1U] + 1U) /
+                        2U);
+                    chroma[x + 1U] = static_cast<BYTE>(
+                        (static_cast<unsigned>(first[x * 2U + 3U]) +
+                         second[x * 2U + 3U] + 1U) /
+                        2U);
+                }
+            }
+        } else {
+            for (UINT y = 0; y < outputHeight; ++y) {
+                std::memcpy(
+                    nv12.data() + static_cast<std::size_t>(y) * outputWidth,
+                    source + static_cast<std::size_t>(y) * stride,
+                    outputWidth);
+            }
+            const BYTE* chroma = source + stride * outputHeight;
+            for (UINT y = 0; y < outputHeight / 2U; ++y) {
+                std::memcpy(
+                    nv12.data() + lumaBytes +
+                        static_cast<std::size_t>(y) * outputWidth,
+                    chroma + static_cast<std::size_t>(y) * stride,
+                    outputWidth);
+            }
         }
         buffer->Unlock();
         return true;
@@ -580,7 +999,7 @@ struct MfH264Decoder::Impl {
             frame->color.chromaLocation = ChromaLocation::Left;
         LONGLONG time = 0;
         LONGLONG duration = 0;
-        if (!mpeg4Part2 && !pendingPresentationTimes.empty()) {
+        if (h264 && !pendingPresentationTimes.empty()) {
             time = pendingPresentationTimes.top().first;
             duration = pendingPresentationTimes.top().second;
             pendingPresentationTimes.pop();
@@ -622,9 +1041,12 @@ struct MfH264Decoder::Impl {
                 HRESULT hr = MFCreateSample(&suppliedSample);
                 if (FAILED(hr)) return Fail(HresultText(L"MFCreateSample(NV12)", hr));
                 ComPtr<IMFMediaBuffer> mediaBuffer;
-                const DWORD required = outputBufferSize != 0
-                                           ? outputBufferSize
-                                           : outputWidth * outputHeight * 3U / 2U;
+                const DWORD required =
+                    outputBufferSize != 0
+                        ? outputBufferSize
+                        : (outputSubtype == MFVideoFormat_YUY2
+                               ? outputWidth * outputHeight * 2U
+                               : outputWidth * outputHeight * 3U / 2U);
                 hr = MFCreateMemoryBuffer(required, &mediaBuffer);
                 if (FAILED(hr) || FAILED(suppliedSample->AddBuffer(mediaBuffer.Get()))) {
                     return Fail(FAILED(hr)
@@ -662,14 +1084,108 @@ struct MfH264Decoder::Impl {
     bool Decode(const EncodedSample& encoded,
                 std::vector<std::shared_ptr<VideoFrame>>& output) {
         output.clear();
+        if (sourceReader) {
+            if (encoded.trackId != track.trackId)
+                return Fail(
+                    L"The source reader received a sample for the wrong track");
+            if (sourceReaderNeedsSeek) {
+                PROPVARIANT position;
+                PropVariantInit(&position);
+                position.vt = VT_I8;
+                position.hVal.QuadPart =
+                    SecondsToMediaTime(encoded.PtsSeconds());
+                const HRESULT seekResult =
+                    sourceReader->SetCurrentPosition(GUID_NULL, position);
+                PropVariantClear(&position);
+                if (FAILED(seekResult)) {
+                    // Truncated AVI files can expose a valid idx1/key VOP to
+                    // the built-in demuxer while the Media Foundation byte
+                    // stream refuses random positioning. Fall back to feeding
+                    // that independently validated access unit directly to
+                    // the matching decoder transform.
+                    sourceReader.Reset();
+                    outputType.Reset();
+                    surfaces.clear();
+                    sourceReaderNeedsSeek = true;
+                    if (!CreateTransform()) return false;
+                    description =
+                        std::wstring(L"Windows Media Foundation ") +
+                        CodecName() +
+                        L" transform fallback after source seek (NV12)";
+                    return Decode(encoded, output);
+                }
+                sourceReaderNeedsSeek = false;
+            }
+            for (unsigned attempt = 0; attempt < 16; ++attempt) {
+                DWORD actualStream = 0;
+                DWORD flags = 0;
+                LONGLONG timestamp = 0;
+                ComPtr<IMFSample> decoded;
+                const HRESULT hr = sourceReader->ReadSample(
+                    sourceReaderStream, 0, &actualStream, &flags, &timestamp,
+                    &decoded);
+                if (FAILED(hr))
+                    return Fail(HresultText(L"Decode MPEG-2 frame", hr));
+                if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) {
+                    error.clear();
+                    return true;
+                }
+                if (decoded) {
+                    if (!MakeFrame(decoded.Get(), output)) return false;
+                    error.clear();
+                    return true;
+                }
+            }
+            return Fail(L"The video source reader produced no frame");
+        }
         if (!transform || encoded.trackId != track.trackId) {
             return Fail(L"MfH264Decoder received a sample for the wrong track");
         }
         std::vector<std::uint8_t> inputBytes;
-        if (mpeg4Part2) {
-            inputBytes = encoded.bytes;
+        if (!h264) {
+            std::vector<std::uint8_t> mpeg4Bytes;
+            const std::vector<std::uint8_t>* encodedBytes = &encoded.bytes;
+            if (mpeg4Part2) {
+                std::size_t elementaryStart = encoded.bytes.size();
+                for (std::size_t i = 0; i + 4U <= encoded.bytes.size(); ++i) {
+                    if (encoded.bytes[i] == 0 &&
+                        encoded.bytes[i + 1U] == 0 &&
+                        encoded.bytes[i + 2U] == 1) {
+                        elementaryStart = i;
+                        break;
+                    }
+                }
+                if (elementaryStart != 0 &&
+                    elementaryStart < encoded.bytes.size()) {
+                    mpeg4Bytes.assign(encoded.bytes.begin() + elementaryStart,
+                                      encoded.bytes.end());
+                    encodedBytes = &mpeg4Bytes;
+                }
+            }
+            const bool sampleHasMpeg4Header =
+                mpeg4Part2 && RememberMpeg4SequenceHeader(*encodedBytes);
+            if (mpeg4Part2 && encoded.sync && !sampleHasMpeg4Header &&
+                !mpeg4SequenceHeader.empty()) {
+                // Legacy AVI files commonly carry the MPEG-4 visual
+                // sequence/VOL header only in the first packet. Preserve
+                // that first-party parsed header and prefix it to a
+                // random-access VOP after seeking.
+                inputBytes.reserve(mpeg4SequenceHeader.size() +
+                                   encoded.bytes.size());
+                inputBytes.insert(inputBytes.end(),
+                                  mpeg4SequenceHeader.begin(),
+                                  mpeg4SequenceHeader.end());
+                inputBytes.insert(inputBytes.end(),
+                                  encodedBytes->begin(), encodedBytes->end());
+            } else {
+                inputBytes = *encodedBytes;
+            }
         } else if (!ConvertToAnnexB(encoded, inputBytes)) {
             return false;
+        }
+        if (inputBytes.empty()) {
+            error.clear();
+            return true;
         }
         if (inputBytes.size() > MAXDWORD) {
             return Fail(L"The compressed video access unit is too large");
@@ -683,12 +1199,12 @@ struct MfH264Decoder::Impl {
             hr = transform->ProcessInput(0, inputSample.Get(), 0);
         }
         if (FAILED(hr)) return Fail(HresultText(L"ProcessInput(H.264)", hr));
-        if (!mpeg4Part2) {
+        if (h264) {
             pendingPresentationTimes.emplace(
                 SecondsToMediaTime(encoded.PtsSeconds()),
                 SecondsToMediaTime(encoded.DurationSeconds()));
         }
-        if (!mpeg4Part2) parameterSetsPending = false;
+        if (h264) parameterSetsPending = false;
         if (!DrainOutput(output)) return false;
         error.clear();
         return true;
@@ -696,6 +1212,10 @@ struct MfH264Decoder::Impl {
 
     bool Flush(std::vector<std::shared_ptr<VideoFrame>>& output) {
         output.clear();
+        if (sourceReader) {
+            error.clear();
+            return true;
+        }
         if (!transform) return Fail(L"The H.264 decoder is not initialized");
         if (drainComplete) {
             error.clear();
@@ -721,12 +1241,34 @@ struct MfH264Decoder::Impl {
     }
 
     bool Reset() {
+        if (sourceReader) {
+            const HRESULT hr = sourceReader->Flush(sourceReaderStream);
+            sourceReaderNeedsSeek = true;
+            surfaces.clear();
+            if (FAILED(hr))
+                return Fail(HresultText(L"Flush video source reader", hr));
+            error.clear();
+            return true;
+        }
         if (!transform) return Fail(L"The H.264 decoder is not initialized");
+        if (!h264) {
+            // The legacy MPEG-4/WMV decoder objects do not reliably resume
+            // from a random-access picture after MFT_MESSAGE_COMMAND_FLUSH.
+            // Recreate the transform while preserving the parsed track
+            // format so the sequence header is applied again on every seek.
+            surfaces.clear();
+            outputType.Reset();
+            transform.Reset();
+            pendingPresentationTimes = {};
+            drainStarted = false;
+            drainComplete = false;
+            return CreateTransform();
+        }
         HRESULT hr = transform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         if (FAILED(hr)) return Fail(HresultText(L"Flush H.264 decoder", hr));
         hr = transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
         if (FAILED(hr)) return Fail(HresultText(L"Restart H.264 stream", hr));
-        parameterSetsPending = !mpeg4Part2;
+        parameterSetsPending = h264;
         surfaces.clear();
         pendingPresentationTimes = {};
         drainStarted = false;

@@ -155,6 +155,29 @@ bool FindAudioSpecificConfig(const std::uint8_t* bytes, std::size_t size,
     return false;
 }
 
+bool FindEsdsVideoConfiguration(const std::uint8_t* bytes, std::size_t size,
+                                std::uint8_t& objectType,
+                                std::vector<std::uint8_t>& config) {
+    objectType = 0;
+    config.clear();
+    for (std::size_t i = 0; i + 2 <= size; ++i) {
+        if (bytes[i] != 0x04 && bytes[i] != 0x05) continue;
+        std::size_t position = i + 1;
+        std::size_t length = 0;
+        if (!ReadDescriptorLength(bytes, size, position, length) ||
+            position > size || length > size - position) {
+            continue;
+        }
+        if (bytes[i] == 0x04 && length != 0 && objectType == 0) {
+            objectType = bytes[position];
+        } else if (bytes[i] == 0x05 && length != 0 && config.empty() &&
+                   length <= 1024U * 1024U) {
+            config.assign(bytes + position, bytes + position + length);
+        }
+    }
+    return objectType != 0;
+}
+
 ColorPrimaries MapPrimaries(std::uint16_t value) {
     if (value == 1) return ColorPrimaries::Bt709;
     if (value == 9) return ColorPrimaries::Bt2020;
@@ -388,20 +411,48 @@ struct Mp4Demuxer::Impl {
                 info.codec = CodecId::Hevc;
             } else if (entry.type == "avc1" || entry.type == "avc3") {
                 info.codec = CodecId::H264;
+            } else if (entry.type == "mp2v" || entry.type == "m2v1" ||
+                       entry.type == "mpgv") {
+                info.codec = CodecId::Mpeg2Video;
+            } else if (entry.type == "mp4v") {
+                // The generic mp4v sample entry is disambiguated by the ES
+                // descriptor's objectTypeIndication below.
+                info.codec = CodecId::Mpeg4Part2;
             } else {
-                return Fail(L"Only H.264 avc1/avc3 and HEVC hvc1/hev1 MP4 video is supported");
+                return Fail(
+                    L"Unsupported MP4 video sample entry: " +
+                    std::wstring(entry.type.begin(), entry.type.end()));
             }
             info.width = ReadBe16(entryData + 24);
             info.height = ReadBe16(entryData + 26);
             info.sampleAspectRatio = {1, 1};
             const auto children = Children(data, entry, 78);
-            if (children.empty()) {
+            if (children.empty() && info.codec != CodecId::Mpeg2Video) {
                 return Fail(L"The video sample entry has no codec configuration box");
             }
             for (const Box& child : children) {
                 ParseVisualChild(data, child, info);
+                if (child.type == "esds" &&
+                    child.size >= child.header + 4) {
+                    const std::uint8_t* esds =
+                        data.data() + child.Payload() + 4;
+                    const std::size_t size =
+                        child.size - child.header - 4;
+                    std::uint8_t objectType = 0;
+                    std::vector<std::uint8_t> configuration;
+                    if (FindEsdsVideoConfiguration(
+                            esds, size, objectType, configuration)) {
+                        if (objectType >= 0x60 && objectType <= 0x65)
+                            info.codec = CodecId::Mpeg2Video;
+                        else if (objectType == 0x20)
+                            info.codec = CodecId::Mpeg4Part2;
+                        if (!configuration.empty())
+                            info.codecPrivate = std::move(configuration);
+                    }
+                }
             }
-            if (info.codecPrivate.empty()) {
+            if (info.codecPrivate.empty() &&
+                info.codec != CodecId::Mpeg2Video) {
                 return Fail(info.codec == CodecId::H264
                                 ? L"The H.264 sample entry is missing avcC data"
                                 : L"The HEVC sample entry is missing hvcC data");
@@ -410,10 +461,12 @@ struct Mp4Demuxer::Impl {
             if (payloadSize < 28) {
                 return Fail(L"Truncated audio sample entry");
             }
-            if (entry.type != "mp4a") {
-                return Fail(L"Only AAC mp4a audio is supported");
+            const bool aac = entry.type == "mp4a";
+            const bool ac3 = entry.type == "ac-3";
+            if (!aac && !ac3) {
+                return Fail(L"Only AAC mp4a and AC-3 audio is supported");
             }
-            info.codec = CodecId::Aac;
+            info.codec = aac ? CodecId::Aac : CodecId::Ac3;
             const std::uint16_t soundVersion = ReadBe16(entryData + 8);
             info.channels = ReadBe16(entryData + 16);
             info.bitsPerSample = ReadBe16(entryData + 18);
@@ -422,13 +475,14 @@ struct Mp4Demuxer::Impl {
                 soundVersion == 0 ? 28 : (soundVersion == 1 ? 44 : 64);
             const auto children = Children(data, entry, childPrefix);
             for (const Box& child : children) {
-                if (child.type == "esds" && child.size >= child.header + 4) {
+                if (aac && child.type == "esds" &&
+                    child.size >= child.header + 4) {
                     const std::uint8_t* esds = data.data() + child.Payload() + 4;
                     const std::size_t size = child.size - child.header - 4;
                     FindAudioSpecificConfig(esds, size, info.codecPrivate);
                 }
             }
-            if (info.codecPrivate.empty()) {
+            if (aac && info.codecPrivate.empty()) {
                 return Fail(L"The AAC sample entry is missing AudioSpecificConfig");
             }
         }
@@ -488,17 +542,24 @@ struct Mp4Demuxer::Impl {
             std::uint32_t count = 0;
             std::uint32_t rawOffset = 0;
             if (!reader.ReadU32(count) || !reader.ReadU32(rawOffset) ||
-                count > sampleCount - output) {
+                count == 0) {
                 return Fail(L"Invalid ctts entry");
             }
             const std::int64_t offset = version == 1
                                             ? static_cast<std::int32_t>(rawOffset)
                                             : static_cast<std::int64_t>(rawOffset);
+            // A small number of files produced by older muxers contain one
+            // trailing ctts run beyond stts/stsz. Players conventionally
+            // ignore that surplus run. Preserve every valid sample timestamp
+            // and leave missing entries at their decode timestamp.
+            const std::size_t available = sampleCount - output;
+            const std::size_t used =
+                std::min<std::size_t>(count, available);
             std::fill_n(offsets.begin() + static_cast<std::ptrdiff_t>(output),
-                        count, offset);
-            output += count;
+                        used, offset);
+            output += used;
         }
-        return output == sampleCount || Fail(L"ctts does not cover every sample");
+        return true;
     }
 
     bool ParseSampleSizes(const std::vector<std::uint8_t>& data, const Box& box,
@@ -823,6 +884,9 @@ struct Mp4Demuxer::Impl {
         }
         if (!foundFtyp) return Fail(L"The file is not an ISO Base Media MP4 file");
         if (!foundMoov) return Fail(L"The MP4 file has no moov box");
+        for (Track& track : tracks) track.info.sourcePath = path;
+        publicTracks.clear();
+        for (const Track& track : tracks) publicTracks.push_back(track.info);
         error.clear();
         return true;
     }

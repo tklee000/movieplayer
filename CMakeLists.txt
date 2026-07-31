@@ -172,6 +172,8 @@ add_library(MovieCodecCore STATIC
     src/codec/container/mkv/MkvDemuxer.h
     src/codec/container/mp4/Mp4Demuxer.cpp
     src/codec/container/mp4/Mp4Demuxer.h
+    src/codec/container/ts/TsDemuxer.cpp
+    src/codec/container/ts/TsDemuxer.h
 )
 target_include_directories(MovieCodecCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(MovieCodecCore PUBLIC
@@ -209,7 +211,7 @@ add_library(MovieCodecVideo STATIC
     src/codec/video/hevc/D3D11HevcDecoder.h
 )
 target_link_libraries(MovieCodecVideo PUBLIC MovieCodecCore d3d11 dxgi dxguid
-    mfplat mfuuid wmcodecdspuuid ole32)
+    mfplat mfreadwrite mfuuid wmcodecdspuuid ole32)
 
 if(MSVC)
     foreach(codec_target IN ITEMS MovieCodecCore MovieCodecAudio MovieCodecVideo)

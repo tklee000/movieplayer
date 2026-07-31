@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -51,6 +52,33 @@ bool IsMpeg4Part2(std::uint32_t value) {
            text == "MP4V" || text == "FMP4";
 }
 
+std::string UpperFourCc(std::uint32_t value) {
+    std::string text = FourCcText(value);
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](char c) {
+                       return static_cast<char>(
+                           std::toupper(static_cast<unsigned char>(c)));
+                   });
+    return text;
+}
+
+bool IsH264(std::uint32_t value) {
+    const std::string text = UpperFourCc(value);
+    return text == "H264" || text == "X264" || text == "AVC1" ||
+           text == "DAVC";
+}
+
+bool IsWmv3(std::uint32_t value) {
+    return UpperFourCc(value) == "WMV3";
+}
+
+bool IsMsmpeg4v3(std::uint32_t value) {
+    const std::string text = UpperFourCc(value);
+    return text == "DIV3" || text == "MP43" || text == "MPG3" ||
+           text == "DIV5" || text == "DIV6" || text == "AP41" ||
+           text == "COL1";
+}
+
 int StreamNumber(std::uint32_t chunkId) {
     const char first = static_cast<char>(chunkId & 0xffU);
     const char second = static_cast<char>((chunkId >> 8U) & 0xffU);
@@ -94,6 +122,8 @@ struct AviDemuxer::Impl {
     std::vector<GlobalSample> samples;
     std::wstring error;
     std::uint64_t moviTypeOffset = 0;
+    std::uint64_t moviDataOffset = 0;
+    std::uint64_t moviEnd = 0;
     std::uint64_t indexOffset = 0;
     std::uint32_t indexSize = 0;
     std::size_t readIndex = 0;
@@ -152,10 +182,27 @@ struct AviDemuxer::Impl {
             const std::int32_t height = static_cast<std::int32_t>(ReadU32(format.data() + 8));
             const std::uint32_t compression = ReadU32(format.data() + 16);
             const std::uint32_t codec = handler != 0 ? handler : compression;
-            if (!IsMpeg4Part2(codec) && !IsMpeg4Part2(compression)) return true;
+            CodecId codecId = CodecId::Unknown;
+            std::uint32_t matchedCodec = codec;
+            const std::uint32_t candidates[] = {codec, compression};
+            for (const std::uint32_t candidate : candidates) {
+                if (IsH264(candidate))
+                    codecId = CodecId::H264;
+                else if (IsWmv3(candidate))
+                    codecId = CodecId::Wmv3;
+                else if (IsMsmpeg4v3(candidate))
+                    codecId = CodecId::Msmpeg4v3;
+                else if (IsMpeg4Part2(candidate))
+                    codecId = CodecId::Mpeg4Part2;
+                if (codecId != CodecId::Unknown) {
+                    matchedCodec = candidate;
+                    break;
+                }
+            }
+            if (codecId == CodecId::Unknown) return true;
             track.info.type = TrackType::Video;
-            track.info.codec = CodecId::Mpeg4Part2;
-            track.info.sampleEntry = FourCcText(codec);
+            track.info.codec = codecId;
+            track.info.sampleEntry = FourCcText(matchedCodec);
             track.info.width = std::abs(width);
             track.info.height = std::abs(height);
             track.info.frameRate = {track.rate, track.scale};
@@ -164,7 +211,10 @@ struct AviDemuxer::Impl {
             track.info.color.primaries = ColorPrimaries::Bt709;
             track.info.color.transfer = TransferCharacteristic::Bt709;
             if (headerSize >= 40 && headerSize <= format.size()) {
-                track.info.codecPrivate.assign(format.begin() + headerSize,
+                const std::size_t privateOffset =
+                    codecId == CodecId::Wmv3 ? 40U : headerSize;
+                track.info.codecPrivate.assign(
+                                               format.begin() + privateOffset,
                                                format.end());
             }
         } else if (type == FourCc('a', 'u', 'd', 's') && format.size() >= 16) {
@@ -255,6 +305,136 @@ struct AviDemuxer::Impl {
         return track.scale;
     }
 
+    bool AppendSample(Track& track, std::uint64_t dataOffset,
+                      std::uint32_t byteSize, bool sync) {
+        if (dataOffset > file.Size() ||
+            byteSize > file.Size() - dataOffset) {
+            return Fail(L"An AVI sample points outside the file");
+        }
+        const std::uint32_t duration = SampleDuration(track, byteSize);
+        Sample sample;
+        sample.dataOffset = dataOffset;
+        sample.size = byteSize;
+        sample.timestamp =
+            track.nextTimestamp +
+            static_cast<std::int64_t>(track.start) * track.scale;
+        sample.duration = duration;
+        sample.globalIndex = samples.size();
+        sample.sync = track.info.type == TrackType::Audio || sync;
+        track.nextTimestamp += duration;
+        const std::size_t trackIndex =
+            static_cast<std::size_t>(&track - tracks.data());
+        const std::size_t sampleIndex = track.samples.size();
+        track.samples.push_back(sample);
+        samples.push_back({trackIndex, sampleIndex});
+        return true;
+    }
+
+    bool IsRecoveredKeyFrame(const Track& track, std::uint64_t offset,
+                             std::uint32_t size) {
+        if (track.info.type != TrackType::Video) return true;
+        const std::size_t probeSize = static_cast<std::size_t>(
+            std::min<std::uint64_t>(size, 64U * 1024U));
+        std::vector<std::uint8_t> bytes;
+        if (probeSize == 0 ||
+            !file.Read(offset, probeSize, bytes, error)) {
+            return false;
+        }
+        if (track.info.codec == CodecId::H264) {
+            for (std::size_t i = 0; i + 4 < bytes.size(); ++i) {
+                const bool start3 =
+                    bytes[i] == 0 && bytes[i + 1] == 0 &&
+                    bytes[i + 2] == 1;
+                const bool start4 =
+                    i + 4 < bytes.size() && bytes[i] == 0 &&
+                    bytes[i + 1] == 0 && bytes[i + 2] == 0 &&
+                    bytes[i + 3] == 1;
+                if (start3 && (bytes[i + 3] & 0x1fU) == 5U) return true;
+                if (start4 && (bytes[i + 4] & 0x1fU) == 5U) return true;
+            }
+            return false;
+        }
+        if (track.info.codec == CodecId::Mpeg4Part2) {
+            for (std::size_t i = 0; i + 5 < bytes.size(); ++i) {
+                if (bytes[i] == 0 && bytes[i + 1] == 0 &&
+                    bytes[i + 2] == 1 && bytes[i + 3] == 0xb6) {
+                    return (bytes[i + 4] >> 6U) == 0;
+                }
+            }
+            return false;
+        }
+        // The legacy codecs do not expose a uniform key-picture marker in
+        // their AVI payload. Marking packets seekable is preferable to making
+        // an otherwise intact, index-less recording impossible to open.
+        return true;
+    }
+
+    bool ScanMoviRange(std::uint64_t begin, std::uint64_t end,
+                       unsigned depth = 0) {
+        if (depth > 4 || begin > end || end > file.Size())
+            return Fail(L"The AVI movi list has invalid bounds");
+        std::uint64_t position = begin;
+        while (position + 8 <= end) {
+            std::uint32_t id = 0, size = 0;
+            if (!ReadHeader(position, id, size)) return false;
+            const std::uint64_t payload = position + 8U;
+            if (size > end - payload) {
+                // A partially copied final packet cannot be decoded, but all
+                // preceding complete packets remain usable.
+                break;
+            }
+            if (id == FourCc('L', 'I', 'S', 'T') && size >= 4) {
+                std::uint32_t listType = 0;
+                if (!file.Read(payload, &listType, sizeof(listType), error))
+                    return false;
+                if (listType == FourCc('r', 'e', 'c', ' ') &&
+                    !ScanMoviRange(payload + 4U, payload + size, depth + 1)) {
+                    return false;
+                }
+            } else {
+                Track* track = FindTrackByStream(StreamNumber(id));
+                if (track && size != 0) {
+                    const bool sync =
+                        IsRecoveredKeyFrame(*track, payload, size);
+                    if (!error.empty()) return false;
+                    if (!AppendSample(*track, payload, size, sync))
+                        return false;
+                }
+            }
+            const std::uint64_t next =
+                payload + size + (static_cast<std::uint64_t>(size) & 1U);
+            if (next <= position) break;
+            position = next;
+        }
+        return true;
+    }
+
+    bool FindClassicIndexNearEnd() {
+        if (file.Size() < 8) return false;
+        constexpr std::uint64_t kMaximumSearch = 64ULL * 1024ULL * 1024ULL;
+        const std::uint64_t begin =
+            file.Size() > kMaximumSearch ? file.Size() - kMaximumSearch : 0;
+        std::vector<std::uint8_t> tail;
+        if (!file.Read(begin, static_cast<std::size_t>(file.Size() - begin),
+                       tail, error)) {
+            return false;
+        }
+        for (std::size_t i = tail.size() - 8; i != 0; --i) {
+            if (ReadU32(tail.data() + i) != FourCc('i', 'd', 'x', '1'))
+                continue;
+            const std::uint32_t size = ReadU32(tail.data() + i + 4);
+            if (size >= 16 && (size % 16U) == 0 &&
+                size <= tail.size() - i - 8) {
+                indexOffset = begin + i + 8U;
+                indexSize = size;
+                error.clear();
+                return true;
+            }
+        }
+        error.clear();
+        return false;
+    }
+
     bool ParseIndex() {
         if (indexOffset == 0 || indexSize < 16 || (indexSize % 16U) != 0)
             return Fail(L"This AVI file has no usable classic idx1 index");
@@ -279,21 +459,10 @@ struct AviDemuxer::Impl {
             const std::uint64_t headerOffset = offsetBase + relativeOffset;
             if (headerOffset > file.Size() - 8 || byteSize > file.Size() - headerOffset - 8)
                 return Fail(L"An AVI idx1 sample points outside the file");
-            const std::uint32_t duration = SampleDuration(*track, byteSize);
-            Sample sample;
-            sample.dataOffset = headerOffset + 8U;
-            sample.size = byteSize;
-            sample.timestamp = track->nextTimestamp +
-                               static_cast<std::int64_t>(track->start) * track->scale;
-            sample.duration = duration;
-            sample.globalIndex = samples.size();
-            sample.sync = track->info.type == TrackType::Audio ||
-                          (flags & 0x10U) != 0;
-            track->nextTimestamp += duration;
-            const std::size_t trackIndex = static_cast<std::size_t>(track - tracks.data());
-            const std::size_t sampleIndex = track->samples.size();
-            track->samples.push_back(sample);
-            samples.push_back({trackIndex, sampleIndex});
+            if (!AppendSample(*track, headerOffset + 8U, byteSize,
+                              (flags & 0x10U) != 0)) {
+                return false;
+            }
         }
         if (!baseResolved || samples.empty()) return Fail(L"The AVI idx1 index is empty");
         return true;
@@ -315,7 +484,23 @@ struct AviDemuxer::Impl {
             std::uint32_t id = 0, size = 0;
             if (!ReadHeader(position, id, size)) return false;
             const std::uint64_t payload = position + 8U;
-            if (size > declaredEnd - payload) return Fail(L"Truncated top-level AVI chunk");
+            if (size > declaredEnd - payload) {
+                if (id == FourCc('L', 'I', 'S', 'T') && size >= 4) {
+                    std::uint32_t listType = 0;
+                    if (!file.Read(payload, &listType, sizeof(listType), error))
+                        return false;
+                    if (listType == FourCc('m', 'o', 'v', 'i')) {
+                        moviTypeOffset = payload;
+                        moviDataOffset = payload + 4U;
+                        moviEnd = file.Size();
+                        break;
+                    }
+                }
+                // Some AVI writers leave padding between movi and idx1 which
+                // is not a valid RIFF chunk. Recover idx1 from the file tail.
+                if (moviTypeOffset != 0) break;
+                return Fail(L"Truncated top-level AVI chunk");
+            }
             if (id == FourCc('L', 'I', 'S', 'T') && size >= 4) {
                 std::uint32_t listType = 0;
                 if (!file.Read(payload, &listType, sizeof(listType), error)) return false;
@@ -327,6 +512,8 @@ struct AviDemuxer::Impl {
                     }
                 } else if (listType == FourCc('m', 'o', 'v', 'i')) {
                     moviTypeOffset = payload;
+                    moviDataOffset = payload + 4U;
+                    moviEnd = payload + size;
                 }
             } else if (id == FourCc('i', 'd', 'x', '1')) {
                 indexOffset = payload;
@@ -336,14 +523,24 @@ struct AviDemuxer::Impl {
         }
         if (tracks.empty() || moviTypeOffset == 0)
             return Fail(
-                L"The AVI file has no supported Xvid/DX50, MP3, or AC-3 streams");
-        if (!ParseIndex()) return false;
+                L"The AVI file has no supported video or audio streams");
+        if (indexOffset == 0) FindClassicIndexNearEnd();
+        if (indexOffset != 0) {
+            if (!ParseIndex()) return false;
+        } else {
+            const std::uint64_t scanEnd =
+                std::min<std::uint64_t>(
+                    moviEnd == 0 ? file.Size() : moviEnd, file.Size());
+            if (!ScanMoviRange(moviDataOffset, scanEnd) || samples.empty())
+                return Fail(L"The AVI movi list contains no complete samples");
+        }
 
         bool selectedVideo = false;
         bool selectedAudio = false;
         publicTracks.clear();
         durationSeconds = 0.0;
         for (Track& track : tracks) {
+            track.info.sourcePath = path;
             track.info.sampleCount = track.samples.size();
             if (!track.samples.empty()) {
                 const Sample& last = track.samples.back();
@@ -372,7 +569,7 @@ struct AviDemuxer::Impl {
         publicTracks.clear();
         samples.clear();
         error.clear();
-        moviTypeOffset = indexOffset = 0;
+        moviTypeOffset = moviDataOffset = moviEnd = indexOffset = 0;
         indexSize = 0;
         readIndex = 0;
         durationSeconds = 0.0;

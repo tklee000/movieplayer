@@ -116,6 +116,8 @@ int wmain(int argc, wchar_t** argv) {
                       L"--subtitle-probe[=SECONDS] | "
                       L"--timeline-probe[=SAMPLES] | "
                       L"--frame-probe[=FRAMES] | "
+                      L"--component-probe[=AUDIO_TRACK] | "
+                      L"--video-component-probe | "
                       L"--end-probe | "
                       L"--dump-audio=OUTPUT.f32le\n";
         return 2;
@@ -145,6 +147,8 @@ int wmain(int argc, wchar_t** argv) {
     unsigned timelineProbeLimit = 120;
     bool frameProbeOnly = false;
     unsigned frameProbeLimit = 300;
+    bool componentProbeOnly = false;
+    bool videoComponentProbeOnly = false;
     bool endProbeOnly = false;
     bool subtitleProbeOnly = false;
     double subtitleProbeTime = 0.0;
@@ -156,6 +160,7 @@ int wmain(int argc, wchar_t** argv) {
         constexpr wchar_t audioDumpPrefix[] = L"--dump-audio=";
         constexpr wchar_t timelineProbePrefix[] = L"--timeline-probe=";
         constexpr wchar_t frameProbePrefix[] = L"--frame-probe=";
+        constexpr wchar_t componentProbePrefix[] = L"--component-probe=";
         if (option == L"--probe") {
             probeOnly = true;
         } else if (option == L"--end-probe") {
@@ -186,6 +191,22 @@ int wmain(int argc, wchar_t** argv) {
                 std::wcerr << L"invalid frame probe count\n";
                 return 2;
             }
+        } else if (option == L"--component-probe") {
+            componentProbeOnly = true;
+        } else if (option.rfind(componentProbePrefix, 0) == 0) {
+            try {
+                requestedAudioTrack = static_cast<std::uint32_t>(
+                    std::stoul(
+                        option.substr(std::size(componentProbePrefix) - 1U)));
+                if (requestedAudioTrack == 0)
+                    throw std::out_of_range("track");
+                componentProbeOnly = true;
+            } catch (const std::exception&) {
+                std::wcerr << L"invalid component probe audio track\n";
+                return 2;
+            }
+        } else if (option == L"--video-component-probe") {
+            videoComponentProbeOnly = true;
         } else if (option == L"--subtitle-probe") {
             subtitleProbeOnly = true;
         } else if (option.rfind(L"--subtitle-probe=", 0) == 0) {
@@ -255,7 +276,9 @@ int wmain(int argc, wchar_t** argv) {
                    << track.DurationSeconds();
         if (track.type == TrackType::Video) {
             std::wcout << L" dimensions=" << track.width << L"x" << track.height
-                       << L" fps=" << track.frameRate.ToDouble();
+                       << L" fps=" << track.frameRate.ToDouble()
+                       << L" private=" << track.codecPrivate.size()
+                       << L" source=" << track.sourcePath.size();
         } else if (track.type == TrackType::Audio) {
             std::wcout << L" rate=" << track.sampleRate
                        << L" channels=" << track.channels
@@ -272,7 +295,10 @@ int wmain(int argc, wchar_t** argv) {
         std::wcout << L"\n";
         if (!videoTrack &&
             (track.codec == CodecId::H264 || track.codec == CodecId::Hevc ||
-             track.codec == CodecId::Mpeg4Part2))
+             track.codec == CodecId::Mpeg4Part2 ||
+             track.codec == CodecId::Mpeg2Video ||
+             track.codec == CodecId::Wmv3 ||
+             track.codec == CodecId::Msmpeg4v3))
             videoTrack = &track;
         if ((track.codec == CodecId::Aac || track.codec == CodecId::Mp3 ||
              track.codec == CodecId::Opus || track.codec == CodecId::Flac ||
@@ -361,8 +387,10 @@ int wmain(int argc, wchar_t** argv) {
                    << L" max-ctts=" << maximumOffset << L"\n";
         return 0;
     }
-    if (!videoTrack || !audioTrack) {
-        std::wcerr << L"expected a supported video and audio track\n";
+    const bool needsAudio =
+        !frameProbeOnly && !videoComponentProbeOnly && !endProbeOnly;
+    if (!videoTrack || (needsAudio && !audioTrack)) {
+        std::wcerr << L"expected the requested supported media tracks\n";
         return 4;
     }
     if (requestedAudioTrack != 0) {
@@ -472,7 +500,10 @@ int wmain(int argc, wchar_t** argv) {
 
     std::unique_ptr<IVideoDecoder> video;
     if (videoTrack->codec == CodecId::H264 ||
-        videoTrack->codec == CodecId::Mpeg4Part2)
+        videoTrack->codec == CodecId::Mpeg4Part2 ||
+        videoTrack->codec == CodecId::Mpeg2Video ||
+        videoTrack->codec == CodecId::Wmv3 ||
+        videoTrack->codec == CodecId::Msmpeg4v3)
         video = std::make_unique<h264::MfH264Decoder>();
     else
         video = std::make_unique<hevc::D3D11HevcDecoder>();
@@ -559,25 +590,28 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     std::unique_ptr<IAudioDecoder> audio;
-    if (audioTrack->codec == CodecId::Mp3)
-        audio = std::make_unique<mp3::MfMp3Decoder>();
-    else if (audioTrack->codec == CodecId::Opus)
-        audio = std::make_unique<opus::OpusDecoder>();
-    else if (audioTrack->codec == CodecId::Flac)
-        audio = std::make_unique<flac::FlacDecoder>();
-    else if (audioTrack->codec == CodecId::Ac3)
-        audio = std::make_unique<ac3::Ac3Decoder>();
-    else if (audioTrack->codec == CodecId::Eac3 ||
-             audioTrack->codec == CodecId::Dts)
-        audio =
-            std::make_unique<directshow::DirectShowAudioDecoder>();
-    else
-        audio = std::make_unique<aac::AacLcDecoder>();
-    if (!audio->Initialize(*audioTrack)) {
-        std::wcerr << L"audio init failed: " << audio->LastError() << L"\n";
-        return 7;
+    if (needsAudio) {
+        if (audioTrack->codec == CodecId::Mp3)
+            audio = std::make_unique<mp3::MfMp3Decoder>();
+        else if (audioTrack->codec == CodecId::Opus)
+            audio = std::make_unique<opus::OpusDecoder>();
+        else if (audioTrack->codec == CodecId::Flac)
+            audio = std::make_unique<flac::FlacDecoder>();
+        else if (audioTrack->codec == CodecId::Ac3)
+            audio = std::make_unique<ac3::Ac3Decoder>();
+        else if (audioTrack->codec == CodecId::Eac3 ||
+                 audioTrack->codec == CodecId::Dts)
+            audio =
+                std::make_unique<directshow::DirectShowAudioDecoder>();
+        else
+            audio = std::make_unique<aac::AacLcDecoder>();
+        if (!audio->Initialize(*audioTrack)) {
+            std::wcerr << L"audio init failed: " << audio->LastError()
+                       << L"\n";
+            return 7;
+        }
+        std::wcout << L"audio decoder: " << audio->Description() << L"\n";
     }
-    std::wcout << L"audio decoder: " << audio->Description() << L"\n";
     if (!audioDumpPath.empty()) {
         audioDump.open(audioDumpPath, std::ios::binary | std::ios::trunc);
         if (!audioDump) {
@@ -621,6 +655,34 @@ int wmain(int argc, wchar_t** argv) {
                 return false;
             }
             if (eof) break;
+            if (std::wcscmp(label, L"seek") == 0 && i < 4U) {
+                std::wcout << L"seek-sample track=" << sample.trackId
+                           << L" pts=" << sample.PtsSeconds()
+                           << L" sync=" << (sample.sync ? 1 : 0)
+                           << L" bytes=" << sample.bytes.size() << L"\n";
+                if (sample.type == TrackType::Video) {
+                    unsigned shown = 0;
+                    for (std::size_t position = 0;
+                         position + 4U <= sample.bytes.size() && shown < 8U;
+                         ++position) {
+                        if (sample.bytes[position] == 0 &&
+                            sample.bytes[position + 1U] == 0 &&
+                            sample.bytes[position + 2U] == 1) {
+                            std::wcout << L"  start-code=0x" << std::hex
+                                       << static_cast<unsigned>(
+                                              sample.bytes[position + 3U])
+                                       << std::dec << L" at=" << position;
+                            if (sample.bytes[position + 3U] == 0xb6 &&
+                                position + 4U < sample.bytes.size()) {
+                                std::wcout << L" vop-type="
+                                           << (sample.bytes[position + 4U] >> 6U);
+                            }
+                            std::wcout << L"\n";
+                            ++shown;
+                        }
+                    }
+                }
+            }
             if (sample.trackId == videoTrack->trackId) {
                 std::vector<std::shared_ptr<VideoFrame>> frames;
                 if (!video->Decode(sample, frames)) {
@@ -694,7 +756,12 @@ int wmain(int argc, wchar_t** argv) {
                     retainedDisplayedFrame = frame;
                     ++videoFrames;
                 }
-            } else if (sample.trackId == audioTrack->trackId) {
+            } else if (audio && audioTrack &&
+                       sample.trackId == audioTrack->trackId) {
+                // A frame probe verifies the video component in isolation.
+                // Damaged audio in the same source must not hide a successful
+                // video demux/decode result.
+                if (frameProbeOnly) continue;
                 AudioFrame frame;
                 if (!audio->Decode(sample, frame)) {
                     std::wcerr << L"audio decode failed in " << label << L": "
@@ -755,8 +822,41 @@ int wmain(int argc, wchar_t** argv) {
         }
         std::wcout << label << L": video=" << videoFrames
                    << L" audio=" << audioFrames << L"\n";
-        return videoFrames >= wantedVideo && audioFrames >= wantedAudio;
+        const bool complete =
+            videoFrames >= wantedVideo && audioFrames >= wantedAudio;
+        if (!complete) {
+            std::wcerr << label << L" produced too few decoded frames "
+                       << L"(video " << videoFrames << L"/" << wantedVideo
+                       << L", audio " << audioFrames << L"/" << wantedAudio
+                       << L")\n";
+        }
+        return complete;
     };
+
+    if (componentProbeOnly || videoComponentProbeOnly) {
+        const unsigned startAudio = videoComponentProbeOnly ? 0U : 80U;
+        const unsigned middleAudio = videoComponentProbeOnly ? 0U : 64U;
+        if (!decodeSpan(12U, startAudio, L"component-start")) return 29;
+        const double target = demuxer->DurationSeconds() * 0.5;
+        double decodeStart = 0.0;
+        retainedPlaybackFrames.clear();
+        if (!demuxer->Seek(target, decodeStart) || !video->Reset()) {
+            std::wcerr << L"component seek/reset failed: "
+                       << demuxer->LastError() << L"\n";
+            return 29;
+        }
+        if (audio) audio->Reset();
+        if (!decodeSpan(8U, middleAudio, L"component-middle")) return 29;
+        if (videoComponentProbeOnly) {
+            std::wcout << L"video-component-probe-ok seek-start="
+                       << decodeStart << L"\n";
+        } else {
+            std::wcout << L"component-probe-ok audio-track="
+                       << audioTrack->trackId << L" seek-start="
+                       << decodeStart << L"\n";
+        }
+        return 0;
+    }
 
     if (frameProbeOnly) {
         if (!decodeSpan(frameProbeLimit, 0, L"frame-probe")) return 8;
@@ -792,11 +892,19 @@ int wmain(int argc, wchar_t** argv) {
                    : 0;
     }
 
+    const wchar_t* startLabel =
+        videoTrack->codec == CodecId::Mpeg4Part2
+            ? L"start-MPEG4-Part2"
+            : (videoTrack->codec == CodecId::Mpeg2Video
+                   ? L"start-MPEG2"
+                   : (videoTrack->codec == CodecId::Wmv3
+                          ? L"start-WMV3"
+                          : (videoTrack->codec == CodecId::Msmpeg4v3
+                                 ? L"start-Microsoft-MPEG4-v3"
+                                 : (hevcVideo ? L"start-HEVC"
+                                              : L"start-H264"))));
     if (!decodeSpan(hevcVideo ? 1440U : 600U,
-                    hevcVideo ? 2820U : 500U,
-                    videoTrack->codec == CodecId::Mpeg4Part2
-                        ? L"start-MPEG4-Part2"
-                        : (hevcVideo ? L"start-HEVC" : L"start-H264")))
+                    hevcVideo ? 2820U : 500U, startLabel))
         return 8;
     if (nv12Video && bestLumaRange < 8) {
         std::wcerr << L"decoded NV12 frames contain no measurable image contrast\n";

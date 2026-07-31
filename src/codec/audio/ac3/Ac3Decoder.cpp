@@ -1446,13 +1446,6 @@ struct Ac3Decoder::Impl {
             track.sampleRate != kSampleRates[frame.sampleRateCode]) {
             return Fail(L"The container and AC-3 sample rates do not match");
         }
-        if (track.channels > 0 &&
-            track.channels !=
-                static_cast<int>(frame.fullBandwidthChannels +
-                                 (frame.lfeOn ? 1U : 0U))) {
-            return Fail(L"The container and AC-3 channel counts do not match");
-        }
-
         output = {};
         output.sampleRate = kSampleRates[frame.sampleRateCode];
         output.channels = 2;
@@ -1467,10 +1460,19 @@ struct Ac3Decoder::Impl {
                 return false;
             }
         }
-        if (bits.BitPosition() + 17U > sample.bytes.size() * 8U) {
+        const std::size_t payloadEnd = sample.bytes.size() * 8U - 17U;
+        if (bits.BitPosition() > payloadEnd + 16U) {
             output = {};
-            return Fail(L"The AC-3 audio blocks overrun the frame payload");
+            return Fail(
+                L"The AC-3 audio blocks overrun the frame payload (used " +
+                std::to_wstring(bits.BitPosition()) + L" of " +
+                std::to_wstring(payloadEnd) +
+                L" payload bits)");
         }
+        // A few legacy encoders finish the last composite 3/5/11-level
+        // mantissa group in the frame trailer.  The entire sync frame has
+        // already passed its CRC check, so accept a bounded final group
+        // instead of discarding all six otherwise valid audio blocks.
         error.clear();
         return true;
     }
@@ -1552,8 +1554,18 @@ struct Ac3Decoder::Impl {
                                      pendingBytes.begin() + frameBytes);
             AudioFrame decoded;
             if (!DecodeFrame(frameSample, decoded)) {
-                output = {};
-                return false;
+                // AVI audio chunks are not guaranteed to begin at an AC-3
+                // sync-frame boundary after a random seek.  A sync word can
+                // also occur by chance inside the discarded partial frame.
+                // Advance one byte and keep looking for the next CRC-valid
+                // frame without turning a local discontinuity into a fatal
+                // playback error.
+                pendingBytes.erase(pendingBytes.begin());
+                pendingPts += SecondsForBytes(1);
+                for (auto& channel : overlap) channel.fill(0.0);
+                ditherState = 0x12345678U;
+                error.clear();
+                continue;
             }
             decoded.pts = pendingPts;
             if (output.samples.empty()) {

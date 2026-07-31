@@ -42,6 +42,9 @@ enum class CodecId {
     H264,
     Hevc,
     Mpeg4Part2,
+    Mpeg2Video,
+    Wmv3,
+    Msmpeg4v3,
     Aac,
     Mp3,
     Opus,
@@ -102,6 +105,7 @@ struct TrackInfo {
     std::string sampleEntry;
     std::string language;
     std::string name;
+    std::wstring sourcePath;
     bool defaultTrack = true;
     bool forcedTrack = false;
     std::uint32_t timeScale = 0;

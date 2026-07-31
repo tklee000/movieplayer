@@ -172,7 +172,15 @@ struct MkvDemuxer::Impl {
         if (unknown) {
             element.end = file.Size();
         } else if (size > file.Size() - element.dataOffset) {
-            return Fail(L"A Matroska element extends past the end of the file");
+            // Recover metadata and complete clusters from a file whose final
+            // Segment/Cluster was not closed cleanly. ReadPayload and block
+            // parsing still validate every child before accessing it.
+            if (id != kSegment && id != kCluster) {
+                return Fail(
+                    L"A Matroska element extends past the end of the file");
+            }
+            element.size = file.Size() - element.dataOffset;
+            element.end = file.Size();
         } else {
             element.end = element.dataOffset + size;
         }

@@ -3,12 +3,14 @@
 #include "codec/container/avi/AviDemuxer.h"
 #include "codec/container/mkv/MkvDemuxer.h"
 #include "codec/container/mp4/Mp4Demuxer.h"
+#include "codec/container/ts/TsDemuxer.h"
 #include "codec/core/RandomAccessFile.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cwctype>
+#include <utility>
 
 namespace movieplayer::codec {
 namespace {
@@ -18,6 +20,7 @@ enum class ContainerKind {
     Matroska,
     Avi,
     Mp4,
+    Ts,
 };
 
 ContainerKind DetectContainer(const std::wstring& path) {
@@ -26,7 +29,7 @@ ContainerKind DetectContainer(const std::wstring& path) {
     if (!file.Open(path, error) || file.Size() < 8) {
         return ContainerKind::Unknown;
     }
-    std::array<std::uint8_t, 12> bytes = {};
+    std::array<std::uint8_t, 3U * 204U + 4U> bytes = {};
     const std::size_t size = static_cast<std::size_t>(
         std::min<std::uint64_t>(bytes.size(), file.Size()));
     if (!file.Read(0, bytes.data(), size, error)) {
@@ -40,6 +43,21 @@ ContainerKind DetectContainer(const std::wstring& path) {
         std::equal(bytes.begin(), bytes.begin() + 4, "RIFF") &&
         std::equal(bytes.begin() + 8, bytes.begin() + 12, "AVI ")) {
         return ContainerKind::Avi;
+    }
+    const std::array<std::pair<std::size_t, std::size_t>, 3> tsLayouts = {{
+        {188, 0},
+        {192, 4},
+        {204, 0},
+    }};
+    for (const auto& layout : tsLayouts) {
+        const std::size_t stride = layout.first;
+        const std::size_t sync = layout.second;
+        if (sync + 2U * stride < size &&
+            bytes[sync] == 0x47 &&
+            bytes[sync + stride] == 0x47 &&
+            bytes[sync + 2U * stride] == 0x47) {
+            return ContainerKind::Ts;
+        }
     }
     const std::array<std::array<char, 4>, 6> isoBoxTypes = {{
         {{'f', 't', 'y', 'p'}},
@@ -70,6 +88,9 @@ std::unique_ptr<IMediaDemuxer> CreateMediaDemuxer(const std::wstring& path) {
     if (detected == ContainerKind::Mp4) {
         return std::make_unique<mp4::Mp4Demuxer>();
     }
+    if (detected == ContainerKind::Ts) {
+        return std::make_unique<ts::TsDemuxer>();
+    }
 
     const std::size_t dot = path.find_last_of(L'.');
     std::wstring extension = dot == std::wstring::npos ? L"" : path.substr(dot);
@@ -80,6 +101,10 @@ std::unique_ptr<IMediaDemuxer> CreateMediaDemuxer(const std::wstring& path) {
     }
     if (extension == L".avi") {
         return std::make_unique<avi::AviDemuxer>();
+    }
+    if (extension == L".ts" || extension == L".m2ts" ||
+        extension == L".mts") {
+        return std::make_unique<ts::TsDemuxer>();
     }
     return std::make_unique<mp4::Mp4Demuxer>();
 }
