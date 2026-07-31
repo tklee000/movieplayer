@@ -14,10 +14,10 @@ The implementation is deliberately split into three clearly defined areas:
 
 | Area | Responsibility |
 |---|---|
-| First-party MoviePlayer code | MP4/MKV/AVI parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
+| First-party MoviePlayer code | MP4/MKV/AVI/MPEG-TS parsing, sample indexing and seeking, codec-neutral interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle parsing, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
-| Windows platform components | H.264, MPEG-4 Part 2, and MP3 decode transforms; D3D11 devices, DXVA decode services, video processing, DXGI presentation, XAudio2 output, and WARP rendering fallback |
-| External DirectShow audio decoder | Compatible registered decoder used for Matroska E-AC-3 and DTS decode; its binaries remain external |
+| Windows platform components | H.264, MPEG-4 Part 2, MPEG-2, WMV3, Microsoft MPEG-4 v3, and MP3 decode transforms; D3D11 devices, DXVA decode services, video processing, DXGI presentation, XAudio2 output, and WARP rendering fallback |
+| External DirectShow audio decoder | Compatible registered decoder used for E-AC-3 and DTS decode; its binaries remain external |
 | Optional components | NVIDIA RTX Video VSR, whisper.cpp speech recognition, CTranslate2 translation, and SentencePiece tokenization |
 
 Calling a component "first-party" means that its source was implemented in this
@@ -29,18 +29,18 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Area | Current scope |
 |---|---|
 | Operating system | Windows 10 or 11 x64, per-monitor V2 DPI, Unicode, and long-path-aware file handling |
-| Containers | Non-fragmented MP4, focused Matroska/MKV, and classic indexed RIFF AVI; signature-first detection with extension fallback |
-| Video | H.264, HEVC Main/Main10 4:2:0 for the supported DXVA paths, and Xvid/DX50 MPEG-4 Part 2 |
-| Audio | AAC-LC at 24, 44.1, or 48 kHz; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MKV or AVI with mono through 5.1 input; external DirectShow E-AC-3/DTS decode; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
-| Seeking | MP4 sync samples, MKV cues, and AVI keyframe indexes, with decoder and audio-clock reset |
-| Subtitles | External SRT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
+| Containers | Non-fragmented MP4, focused Matroska/MKV, RIFF AVI with `idx1` or `movi` scan recovery, and 188/192/204-byte MPEG-TS; signature-first detection with extension fallback |
+| Video | H.264, HEVC Main/Main10 4:2:0 for the supported DXVA paths, MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4 v3 for the supported container paths |
+| Audio | AAC-LC at 24, 44.1, or 48 kHz; MPEG-TS AAC/ADTS; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MP4/MKV/AVI/MPEG-TS with mono through 5.1 input; external DirectShow E-AC-3/DTS decode; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
+| Seeking | MP4 sync samples, MKV cues, AVI keyframe/index-or-scan samples, and approximate MPEG-TS byte seeking followed by the next keyframe, with decoder and playback-clock reset |
+| Subtitles | External SRT, WebVTT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
 | Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 
-Matroska E-AC-3 and DTS tracks use a compatible external DirectShow audio
-decoder registered on the system. MoviePlayer discovers a decoder by media
-type and converts its supported PCM output to stereo. It does not install,
-bundle, or prescribe a particular external codec.
+Supported Matroska or MPEG-TS E-AC-3 and DTS tracks use a compatible external
+DirectShow audio decoder registered on the system. MoviePlayer discovers a
+decoder by media type and converts its supported PCM output to stereo. It does
+not install, bundle, or prescribe a particular external codec.
 
 These are focused playback implementations for ordinary consumer files, not
 complete implementations of every profile, level, chroma format, bit depth,
@@ -51,9 +51,9 @@ or unusual files can fail to open or decode.
 
 ```mermaid
 flowchart LR
-    A["MP4 / MKV / AVI file"] --> B["First-party demuxer and sample index"]
+    A["MP4 / MKV / AVI / MPEG-TS file"] --> B["First-party demuxer and sample index"]
     B --> C{"Video codec"}
-    C -->|"H.264 or MPEG-4 Part 2"| D["Windows Media Foundation decoder"]
+    C -->|"H.264 / MPEG-4 Part 2 / MPEG-2 / WMV3 / Microsoft MPEG-4 v3"| D["Windows Media Foundation decoder"]
     C -->|"HEVC Main or Main10"| E["First-party HEVC parser and DXVA submission"]
     D --> F["NV12 D3D11 texture"]
     E --> G["NV12 or P010 D3D11 decode surface"]
@@ -68,7 +68,7 @@ flowchart LR
     K -->|"E-AC-3 or DTS"| R["Registered external DirectShow audio decoder"]
     K -->|"MP3"| M["Windows Media Foundation MP3 decoder"]
     K -->|"Opus"| O["BSD-licensed libopus decoder"]
-    L --> N["XAudio2 and audio master clock"]
+    L --> N["XAudio2 and preferred audio clock"]
     Q --> N
     P --> N
     R --> N
@@ -77,21 +77,25 @@ flowchart LR
 ```
 
 The demux, video-decode, and audio-decode stages run on separate worker threads
-with bounded queues. Audio is the playback master clock. Seeking flushes queued
-packets and frames, resets the decoders and audio clock, and resumes from the
-container-specific sync point.
+with bounded queues. Healthy audio output is the preferred playback master
+clock. Playback uses the external clock when audio is absent or after sustained
+audio decode/output failure. Seeking flushes queued packets and frames, resets
+the decoders and clocks, and resumes from the container-specific sync point.
 
 ## First-party media implementation
 
 MoviePlayer directly implements the following media functions:
 
-- The `IMediaDemuxer` abstraction and MP4, MKV, and AVI readers.
+- The `IMediaDemuxer` abstraction and MP4, MKV, AVI, and MPEG-TS readers.
 - MP4 sample tables, 32/64-bit chunk offsets, decode/composition timing,
   synchronization samples, and the codec configuration records used by the
-  supported H.264, HEVC, and AAC paths.
+  supported H.264, HEVC, MPEG-4 Part 2, MPEG-2, AAC, and AC-3 paths.
 - Matroska EBML elements, clusters, cues, block groups, and fixed, Xiph, and
   EBML lacing for the supported tracks.
-- AVI RIFF chunk parsing and `idx1` keyframe indexing.
+- AVI RIFF chunk parsing, `idx1` keyframe indexing, and bounded `movi` scanning
+  for files without a usable classic index.
+- MPEG-TS packet-layout detection, PAT/PMT discovery, PES assembly, PTS
+  normalization, stream probing, and keyframe-aware reading.
 - A codec-neutral packet, track, decoded-frame, and decoder interface shared by
   the playback engine and smoke tests.
 - HEVC parameter-set and slice parsing, decoded-picture tracking, and creation
@@ -114,14 +118,15 @@ Windows Media Foundation is used only for selected codec backends:
   decoder is configured for NV12 output and is asked to use video acceleration.
   The Microsoft transform can fall back to software decoding when the installed
   decoder or GPU cannot accelerate a stream.
-- Xvid/DX50 MPEG-4 Part 2 input uses an installed Windows Media Foundation
-  decoder selected for MP4V input and NV12 output.
+- MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4 v3 input uses the matching
+  Windows decoder for the supported MP4, AVI, and MPEG-TS paths. NV12 output is
+  preferred; supported YUY2 output is converted to NV12 before presentation.
 - MP3 audio uses the Windows MP3 transform and produces PCM for MoviePlayer's
   audio pipeline.
 
-Media Foundation does not parse the MP4, MKV, or AVI container, perform seeking,
-decode AAC or Opus, parse HEVC syntax, schedule playback, render subtitles, or
-manage the application UI.
+Media Foundation does not parse the MP4, MKV, AVI, or MPEG-TS container,
+perform seeking, decode AAC or Opus, parse HEVC syntax, schedule playback,
+render subtitles, or manage the application UI.
 
 ## Hardware acceleration and rendering
 
@@ -165,6 +170,7 @@ processor interfaces, so hardware-dependent streams can remain unavailable.
 |---|---|---|
 | H.264 decode | Windows transform with DXVA acceleration | Windows transform software decode, then D3D11 texture upload |
 | MPEG-4 Part 2 decode | Installed Windows transform | No separate MoviePlayer decoder |
+| MPEG-2/WMV3/Microsoft MPEG-4 v3 decode | Matching Windows transform or DMO | No separate MoviePlayer decoder |
 | HEVC Main/Main10 decode | First-party parsing plus D3D11/DXVA NV12 or P010 decode | No software fallback |
 | Video presentation | Hardware D3D11 video processor | Basic WARP rendering where the required interfaces are available |
 | RTX Video VSR | NVIDIA runtime on a compatible RTX GPU and driver | Standard D3D11 scaling |
@@ -192,7 +198,8 @@ flowchart LR
 The current worker input path requires an MP4 file with a supported 48 kHz AAC
 track. It stores the source transcript beside the video, translates only when
 needed, writes output through a temporary `.part` file, and atomically replaces
-the final SRT. Model files are not included in the binary package.
+the final SRT. Model weights are not embedded in the binary packages; the MSI
+downloads the standard verified models during installation.
 
 Install the pinned models with:
 
@@ -246,7 +253,12 @@ build-vs2019/Release/
 Run the codec smoke test explicitly with:
 
 ```powershell
-cmake --build build-vs2019 --config Release --target MovieCodecSmoke
+$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+$vs = & $vswhere -latest -version '[16.0,17.0)' -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
+$cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+& $cmake --build build-vs2019 --config Release --target MovieCodecSmoke
 .\build-vs2019\Release\MovieCodecSmoke.exe "D:\path\video.mp4"
 ```
 
@@ -266,7 +278,8 @@ The MSI downloads and verifies the standard Whisper and M2M100 models during
 installation. It intentionally excludes the optional Japanese-to-Korean model
 and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` with Windows
 as MoviePlayer-supported file types. Windows retains control of the user's
-default-app choice.
+default-app choice. The per-machine MSI requests administrator approval and is
+currently unsigned, so Windows can display an unknown-publisher warning.
 
 ## Privacy, licenses, and temporary data
 

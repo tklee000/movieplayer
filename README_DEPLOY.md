@@ -9,28 +9,30 @@ installation is not required. Keep the supplied VC142 DLLs, `nvngx_vsr.dll`,
 
 | Layer | Responsibility |
 |---|---|
-| First-party MoviePlayer code | MP4/MKV/AVI parsing, indexing and seeking, HEVC bitstream parsing and DXVA submission, AAC-LC decoding, subtitle handling, channel mixing, and resampling |
+| First-party MoviePlayer code | MP4/MKV/AVI/MPEG-TS parsing, indexing and seeking, HEVC bitstream parsing and DXVA submission, AAC-LC/FLAC/AC-3 decoding, subtitle handling, channel mixing, and resampling |
 | BSD-licensed libopus 1.5.2 | Matroska mono/stereo Opus decoding |
-| Windows Media Foundation | H.264, MPEG-4 Part 2, and MP3 decoding |
-| External DirectShow audio decoder | Matroska E-AC-3 and DTS decoding to stereo PCM through a compatible registered decoder |
+| Windows Media Foundation | H.264, MPEG-4 Part 2, MPEG-2, WMV3, Microsoft MPEG-4 v3, and MP3 decoding |
+| External DirectShow audio decoder | E-AC-3 and DTS decoding to stereo PCM through a compatible registered decoder |
 | D3D11/DXVA/DXGI | Hardware decode services, NV12/P010 video processing, scaling, and presentation |
-| XAudio2 | PCM audio output and the playback master clock |
+| XAudio2 | PCM audio output and the preferred playback clock, with external-clock fallback |
 
 H.264 asks the Windows decoder to use DXVA when available and can use the
 decoder's software path otherwise. HEVC Main10 requires a compatible D3D11
 Main10/P010 hardware decoder and has no software fallback. Optional RTX Video
 VSR automatically falls back to normal D3D11 scaling when unavailable.
 
-The H.264 and HEVC paths target ordinary consumer video files commonly
+The supported H.264, HEVC, MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4
+v3 paths target ordinary consumer video files commonly
 distributed online; they do not implement every profile, level, chroma format,
 bit depth, container combination, or optional feature in those standards.
 Unusual files can be unsupported, and HEVC Main/Main10 requires a compatible
 Windows hardware decoder.
 
 Matroska `A_OPUS` mono and stereo tracks are decoded at 48 kHz. Matroska FLAC
-and AC-3 tracks are decoded by the built-in C++ decoders and delivered or mixed
-to stereo. Matroska E-AC-3 and DTS tracks use a compatible external DirectShow
-audio decoder registered on the system. AC-3, E-AC-3, and DTS tracks are
+and MP4/Matroska/AVI/MPEG-TS AC-3 tracks are decoded by the built-in C++
+decoders and delivered or mixed to stereo. Supported Matroska or MPEG-TS
+E-AC-3 and DTS tracks use a compatible external DirectShow audio decoder
+registered on the system. AC-3, E-AC-3, and DTS tracks are
 selectable from the audio-track menu and are not labeled `[Not Support]`.
 External codec binaries are not included in this MoviePlayer package.
 MoviePlayer does not prescribe or install a particular codec; users manage
@@ -38,7 +40,8 @@ their own DirectShow codec installation.
 
 ## Optional AI subtitles
 
-The large AI runtime and model weights are not included. MoviePlayer provides
+The native AI worker and runtime libraries are included, but the large model
+weights are not embedded in the portable package. MoviePlayer provides
 one **Generate AI Subtitles...** command that automatically detects the speech
 language and selects translation. Select it or run:
 

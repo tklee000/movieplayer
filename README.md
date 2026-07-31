@@ -1,6 +1,7 @@
 # MoviePlayer 0.5
 
-MoviePlayer is a native Windows x64 MP4/MKV/AVI player written in C++17. Its
+MoviePlayer is a native Windows x64 MP4/MKV/AVI/MPEG-TS player written in
+C++17. Its
 first-party media layer was implemented directly in C/C++ for this project.
 The repository contains the container
 parsers, sample indexing and seeking, codec interfaces, HEVC bitstream and
@@ -11,9 +12,9 @@ playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 
 | Layer | MoviePlayer uses it for |
 |---|---|
-| First-party C/C++ | MP4/MKV/AVI parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
+| First-party C/C++ | MP4/MKV/AVI/MPEG-TS parsing, indexing and seeking, codec interfaces, HEVC syntax parsing and DXVA submission, AAC-LC, FLAC, and AC-3 decoding, channel mixing, resampling, subtitle handling, playback scheduling, and the Win32 UI |
 | libopus | Matroska mono/stereo Opus decoding to 48 kHz float PCM |
-| Windows Media Foundation | H.264 and MPEG-4 Part 2 video decoding, plus MP3 audio decoding |
+| Windows Media Foundation | H.264, MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4 v3 video decoding, plus MP3 audio decoding |
 | External DirectShow audio decoder | E-AC-3 and DTS decoding through a compatible decoder registered on the system; external codec binaries are not linked or distributed |
 | D3D11, DXVA, DXGI, and XAudio2 | Hardware video decode services, GPU video processing and presentation, software-rendering fallback, and audio output |
 | Optional NVIDIA and native AI components | RTX Video VSR, speech recognition, and translation |
@@ -30,21 +31,24 @@ implementation ownership, acceleration requirements, and fallback matrix.
 
 ## Current playback scope
 
-- Container: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
+- Containers: non-fragmented MP4 with `moov`, `stbl`, 32/64-bit chunk offsets,
   decode/composition timing, sync samples, `avcC`, `hvcC`, and `esds`; plus
   focused Matroska/MKV playback with `SeekHead`, `Cues`, clusters, block groups,
   and fixed/Xiph/EBML lacing for H.264/HEVC,
   AAC/Opus/FLAC/AC-3/E-AC-3/DTS, and
-  text/bitmap subtitle tracks; plus classic indexed RIFF AVI (`idx1`) for
-  Xvid/DX50 with MP3 or AC-3 audio. The container reader is selected from the
-  file signature first, so supported Matroska or AVI content still opens when
-  its filename has an incorrect extension.
-- Video: H.264 `avc1`/`avc3` MP4 video through the Windows Media Foundation
-  decoder with NV12 output, including B-frame MP4 streams without composition
-  offsets and the tested High Profile Level 4.2 title;
+  text/bitmap subtitle tracks; RIFF AVI with classic `idx1` indexing or a
+  bounded `movi` scan fallback; and 188/192/204-byte MPEG transport streams
+  with PAT/PMT/PES discovery. The container reader is selected from the file
+  signature first, so supported MP4, Matroska, AVI, or MPEG-TS content can open
+  even when its filename has an incorrect extension.
+- Video: H.264 from supported MP4 (`avc1`/`avc3`), AVI, and MPEG-TS inputs
+  through the Windows Media Foundation decoder, including B-frame MP4 streams
+  without composition offsets and the tested High Profile Level 4.2 title;
   and HEVC Main/Main10 4:2:0 streams matching the supplied x265 test title.
-  Xvid/DX50 MPEG-4 Part 2 is decoded through Windows Media Foundation. Video
-  surfaces are presented through the D3D11 video processor.
+  Windows decoders also handle MPEG-4 Part 2, MPEG-2 video, WMV3, and Microsoft
+  MPEG-4 v3 for the supported MP4, AVI, and MPEG-TS paths. Media Foundation
+  NV12 output is preferred; supported YUY2 fallback output is normalized to
+  NV12 before presentation through the D3D11 video processor.
 - Audio: AAC-LC at 24, 44.1, and 48 kHz, including spectral Huffman decoding,
   inverse quantization,
   stereo tools, TNS, IMDCT/window overlap, native stereo playback,
@@ -52,17 +56,19 @@ implementation ownership, acceleration requirements, and fallback matrix.
   mono/stereo Opus through the BSD-licensed libopus 1.5.2 decoder; plus Windows
   Media Foundation MP3 decoding for AVI; first-party Matroska FLAC decoding
   for 4- through 32-bit streams with up to eight channels and stereo output;
-  and first-party Matroska/AVI AC-3 decoding with mono through 5.1 input and
-  stereo downmix. Matroska E-AC-3 and DTS use a compatible external
-  DirectShow audio decoder registered by the user and are converted to stereo
-  PCM for playback.
-- Seeking: MP4 sync-sample, MKV cue, and AVI keyframe-index seek with decoder
-  and audio-clock reset.
-- Subtitles: external SRT, ASS/SSA, and SMI display; Matroska embedded
-  `S_TEXT/ASS`, `S_TEXT/SSA`, `S_TEXT/UTF8`, and DVD VobSub (`S_VOBSUB`) bitmap
-  subtitles with zlib decompression; plus an optional local native AI
-  transcription/translation worker. The worker reuses the built-in MP4/AAC
-  stack and a 63-tap 48 kHz-to-16 kHz FIR resampler.
+  and first-party MP4/Matroska/AVI/MPEG-TS AC-3 decoding with mono through 5.1
+  input and stereo downmix. MPEG-TS AAC is extracted from ADTS frames.
+  E-AC-3 and DTS tracks in supported Matroska or MPEG-TS files use a compatible
+  external DirectShow audio decoder registered by the user and are converted
+  to stereo PCM for playback.
+- Seeking: MP4 sync-sample, MKV cue, AVI keyframe/index-or-scan, and MPEG-TS
+  approximate byte-position seek followed by the next detected keyframe, with
+  decoder and playback-clock reset.
+- Subtitles: external SRT, WebVTT, ASS/SSA, and SMI/SAMI display; Matroska
+  embedded `S_TEXT/ASS`, `S_TEXT/SSA`, `S_TEXT/UTF8`, and DVD VobSub
+  (`S_VOBSUB`) bitmap subtitles with zlib decompression; plus an optional local
+  native AI transcription/translation worker. The worker reuses the built-in
+  MP4/AAC stack and a 63-tap 48 kHz-to-16 kHz FIR resampler.
 - Scaling: D3D11 video processing and optional NVIDIA RTX Video VSR.
 
 The H.264 and HEVC paths are focused playback implementations for ordinary
@@ -82,9 +88,10 @@ src/codec/
   core/                  bounds-checked readers, file I/O, shared media types
   container/
     MediaDemuxer.h       container-neutral interface
-    avi/                 indexed RIFF AVI reader
+    avi/                 RIFF AVI idx1 reader with movi scan recovery
     mkv/                 focused Matroska EBML/Cluster/Cues reader
     mp4/                 ISO Base Media parser and sample-table index
+    ts/                  MPEG transport stream PAT/PMT/PES reader
   audio/
     AudioDecoder.h       audio decoder interface
     aac/                 AAC-LC decoder and standard Huffman tables
@@ -95,8 +102,8 @@ src/codec/
     opus/                libopus-backed Matroska Opus decoder
   subtitle/              embedded UTF-8/ASS text decoder
   video/
-    VideoDecoder.h       video decoder interface shared by H.264 and HEVC
-    h264/                H.264/MPEG-4 Part 2 Media Foundation backend
+    VideoDecoder.h       video decoder interface shared by MF and HEVC paths
+    h264/                Media Foundation backend for H.264 and legacy video
     hevc/                HEVC syntax parser and D3D11/DXVA backend
 ```
 
@@ -107,14 +114,16 @@ Requirements:
 - Windows 10 or 11 x64
 - Visual Studio 2019 with Desktop development with C++
 - CMake bundled with Visual Studio
+- PowerShell 5.1 or later, `curl.exe`, and `git.exe`
 - NVIDIA RTX Video SDK files when VSR is built
 - Pinned native AI source dependencies for the subtitle worker
 
-Runtime playback of Matroska E-AC-3 and DTS uses any compatible external
-DirectShow audio decoder already registered on the system. MoviePlayer does
-not install, bundle, or link an external codec; codec installation and
-registration remain under the user's control. AC-3, E-AC-3, and DTS tracks
-are selectable in the audio-track menu and are not labeled `[Not Support]`.
+Runtime playback of supported Matroska or MPEG-TS E-AC-3 and DTS uses any
+compatible external DirectShow audio decoder already registered on the system.
+MoviePlayer does not install, bundle, or link an external codec; codec
+installation and registration remain under the user's control. AC-3, E-AC-3,
+and DTS tracks are selectable in the audio-track menu and are not labeled
+`[Not Support]`.
 
 Set up the remaining optional/source dependencies, then build:
 
@@ -129,7 +138,12 @@ The build creates `build-vs2019\Release\MoviePlayer.exe` and the native subtitle
 worker. Run the codec smoke test explicitly with:
 
 ```powershell
-cmake --build build-vs2019 --config Release --target MovieCodecSmoke
+$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+$vs = & $vswhere -latest -version '[16.0,17.0)' -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -property installationPath
+$cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+& $cmake --build build-vs2019 --config Release --target MovieCodecSmoke
 .\build-vs2019\Release\MovieCodecSmoke.exe "D:\path\video.mp4"
 ```
 
@@ -144,7 +158,9 @@ The MSI build downloads a pinned, SHA-256-verified WiX toolset into the ignored
 local tool cache. The resulting installer downloads and verifies the standard
 Whisper and M2M100 models during installation, excludes the separately licensed
 Japanese-to-Korean model, and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`,
-and `.mts` as supported MoviePlayer file types.
+and `.mts` as supported MoviePlayer file types. The MSI is a per-machine
+installer, so Windows requests administrator approval. Release MSI files are
+currently unsigned and can display an unknown-publisher warning.
 
 ## License
 
