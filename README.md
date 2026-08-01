@@ -8,6 +8,40 @@ parsers, sample indexing and seeking, codec interfaces, HEVC bitstream and
 DXVA submission code, AAC-LC, FLAC, and AC-3 decoders, libopus-backed Opus
 playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 
+![MoviePlayer first screen](docs/movieplayer-first-screen.png)
+
+## Download and install
+
+- [Open the latest GitHub Release](https://github.com/tklee000/movieplayer/releases/latest)
+- [Download the MoviePlayer 0.5 x64 MSI](https://github.com/tklee000/movieplayer/releases/download/v0.5/MoviePlayer-v0.5-win64.msi)
+- [Download the MoviePlayer 0.5 portable ZIP](https://github.com/tklee000/movieplayer/releases/download/v0.5/MoviePlayer-v0.5-win64.zip)
+- [Download SHA-256 checksums](https://github.com/tklee000/movieplayer/releases/download/v0.5/SHA256SUMS.txt)
+
+The MSI is a per-machine installer and requests administrator approval. It
+registers the supported video extensions and downloads the pinned standard
+Whisper and M2M100 model set during installation, so setup requires an internet
+connection and roughly 2 GiB of additional download/storage capacity. The
+separately licensed Japanese-to-Korean model is not installed by the MSI.
+
+For portable use, extract the ZIP and run `MoviePlayer.exe`. The required VC142
+runtime DLLs are deployed beside the application, so a system-wide Visual C++
+2019 Redistributable installation is not required. AI model weights are not
+embedded in the ZIP and can be installed later with `install_ai_models.cmd`.
+Release MSI files are currently unsigned and can display an unknown-publisher
+warning.
+
+## Highlights
+
+| Area | MoviePlayer 0.5 |
+|---|---|
+| Platform | Native Windows 10/11 x64, Per-monitor V2 DPI, Unicode, and long-path awareness |
+| Playback | Play/pause/stop, frame step, seek, loop, 0.5x-2.0x speed, volume/mute, fullscreen, always-on-top, and conservative next-episode matching |
+| Windows integration | Drag and drop, command-line file open, portable per-user association registration, and MSI system registration for supported extensions |
+| Rendering | Shared-device D3D11 video processing, aspect-ratio-preserving presentation, optional RTX Video VSR, and WARP fallback where supported |
+| Audio clock | XAudio2 audio-master synchronization with an external-clock fallback when audio is absent or fails |
+| UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
+| AI subtitles | Optional native whisper.cpp recognition and CTranslate2/SentencePiece translation; model downloads are pinned and verified |
+
 ## Implementation boundary
 
 | Layer | MoviePlayer uses it for |
@@ -81,6 +115,112 @@ Media Foundation decoder and requests DXVA acceleration when available. The
 native AAC-LC, FLAC, and AC-3 decoders are similarly scoped to the formats
 listed above.
 
+## Playback and Windows integration
+
+- Open media from the file dialog, Windows command line, or drag and drop.
+- Play, pause, stop, step one frame, seek by 10 seconds or with the seek bar,
+  mute, adjust volume, loop, and select 0.50x, 0.75x, 1.00x, 1.25x, 1.50x, or
+  2.00x speed.
+- Toggle fullscreen with `F`, `F11`, `Enter`, or `Alt+Enter`; use `Esc` to
+  leave fullscreen. Always-on-top is available from the View menu.
+- Optionally open the next episode in the same directory. Matching recognizes
+  `E`/`EP` episode tokens such as `E03` to `E04` and rejects candidates whose
+  surrounding title tokens are not sufficiently similar.
+- Select audio and embedded subtitle tracks from their menus, load an external
+  subtitle explicitly, or ask MoviePlayer to find a matching subtitle beside
+  the video.
+- Register `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` for the current
+  user from MoviePlayer and then choose defaults in Windows Settings. The MSI
+  advertises the same formats system-wide; Windows retains control of the
+  user's default-app selection.
+
+## Twelve UI languages
+
+The interface can be switched without restarting or closing the current video.
+The selected code is stored under `HKCU\Software\MoviePlayer`, and missing
+catalog entries fall back to English.
+
+| Code | Language | Code | Language |
+|---|---|---|---|
+| `en` | English | `ja` | Japanese |
+| `ko` | Korean | `fr` | French |
+| `de` | German | `zh-CN` | Simplified Chinese |
+| `zh-TW` | Traditional Chinese | `es` | Spanish |
+| `pt` | Portuguese | `hi` | Hindi |
+| `id` | Indonesian | `ar` | Arabic |
+
+Validate every catalog after changing translations:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate_languages.ps1
+```
+
+## Local AI subtitle generation
+
+The Subtitle menu exposes **Generate AI Subtitles...**. Speech-language
+detection is automatic, and the current UI language is used as the requested
+subtitle language. The compiled worker and native runtime libraries ship with
+MoviePlayer; only the large model weights are downloaded separately.
+
+```powershell
+.\install_ai_models.cmd
+```
+
+The current worker input path requires an MP4 file containing a supported
+48 kHz AAC track. Its fully local pipeline is:
+
+1. MoviePlayer's MP4 reader and AAC-LC decoder produce stereo PCM, which a
+   63-tap FIR resampler converts from 48 kHz to 16 kHz mono.
+2. whisper.cpp 1.9.1 runs `large-v3-turbo`, detects the speech language, and
+   creates timestamped segments.
+3. The original transcript is preserved beside the video as
+   `<video>.<source>.whisper.srt`.
+4. When source and target differ, CTranslate2 4.8.1 and SentencePiece 0.2.1 run
+   the pinned M2M100 418M int8 translation model on the CPU.
+5. Output is written through a temporary `.part` file and atomically replaces
+   the final UTF-8 SRT, so an interruption does not leave a misleading finished
+   subtitle.
+
+Supported AI output targets are `en`, `ja`, `ko`, `fr`, `zh-CN`, `zh-TW`, `es`,
+`pt`, `hi`, `id`, and `ar`. German is available for the application UI but is
+not currently an AI subtitle output target. Simplified-to-Traditional Chinese
+conversion is applied when `zh-TW` is requested.
+
+The default model installer pins and verifies these publisher revisions,
+required sizes, and SHA-256 hashes:
+
+| Model | Revision | Purpose |
+|---|---|---|
+| `ggerganov/whisper.cpp` `ggml-large-v3-turbo.bin` | `5359861c739e955e79d9a303bcbc70fb988958b1` | Multilingual speech recognition |
+| `gn64/M2M100_418M_CTranslate2` | `18e406c615ef2991fa74d53734bf66b0a6b10cb4` | Offline multilingual translation |
+
+The optional `Hunhee/argos-ko-ja` Japanese-to-Korean native model is installed
+separately after explicit acceptance of its publisher-declared CC BY-NC 4.0
+terms:
+
+```powershell
+.\install_japanese_translation_model.cmd
+```
+
+MoviePlayer prefers that model only for detected Japanese speech with Korean
+output; incomplete or failed installations fall back to M2M100. After model
+installation, recognition and translation do not send media or subtitles to a
+cloud API. Generated text can still contain errors, so important subtitles
+should be reviewed manually. See
+[`tools/whisper/README.md`](tools/whisper/README.md) for worker details.
+
+## NVIDIA RTX Video Super Resolution
+
+Enable **View > NVIDIA RTX Video AI Upscaling (VSR)**. MoviePlayer invokes VSR
+only when the source is smaller than the output and composites subtitles after
+the upscale pass. Unsupported hardware, drivers, formats, or runtime failures
+return automatically to normal D3D11 scaling without interrupting playback.
+
+The SDK runtime is proprietary and is not covered by MoviePlayer's MIT License.
+A compatible 64-bit Windows system, NVIDIA RTX GPU, current driver, and the
+packaged NVIDIA runtime are required; review the NVIDIA terms before building
+or redistributing it.
+
 ## Codec layout
 
 ```text
@@ -107,16 +247,26 @@ src/codec/
     hevc/                HEVC syntax parser and D3D11/DXVA backend
 ```
 
-## Build
+## Build from a clean clone
 
 Requirements:
 
 - Windows 10 or 11 x64
-- Visual Studio 2019 with Desktop development with C++
+- Visual Studio 2019 16.11 with **Desktop development with C++** and the v142
+  x64 toolset
 - CMake bundled with Visual Studio
-- PowerShell 5.1 or later, `curl.exe`, and `git.exe`
+- PowerShell 5.1 or later, `curl.exe`, `git.exe`, and internet access for the
+  first dependency download
 - NVIDIA RTX Video SDK files when VSR is built
 - Pinned native AI source dependencies for the subtitle worker
+
+The supplied build selects `Visual Studio 16 2019`, `-A x64`, and `-T v142`;
+Visual Studio 2022 is not used as a substitute. From a clean checkout:
+
+```powershell
+git clone https://github.com/tklee000/movieplayer.git
+cd movieplayer
+```
 
 Runtime playback of supported Matroska or MPEG-TS E-AC-3 and DTS uses any
 compatible external DirectShow audio decoder already registered on the system.
@@ -125,17 +275,25 @@ installation and registration remain under the user's control. AC-3, E-AC-3,
 and DTS tracks are selectable in the audio-track menu and are not labeled
 `[Not Support]`.
 
-Set up the remaining optional/source dependencies, then build:
+Review the applicable third-party terms, set up the pinned dependencies, and
+build Release:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_rtx_video_sdk.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_opus.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_native_ai_dependencies.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Configuration Release
+.\build.cmd -Configuration Release
 ```
 
+`build.ps1` runs the setup scripts automatically when required files are
+missing, so the explicit setup commands can be skipped after their terms have
+already been reviewed. Downloaded SDKs, upstream source trees, model weights,
+build products, release packages, and test media are ignored by Git.
+
 The build creates `build-vs2019\Release\MoviePlayer.exe` and the native subtitle
-worker. Run the codec smoke test explicitly with:
+worker, copies `ctranslate2.dll`, NVIDIA VSR, and the app-local VC142 runtime
+DLLs, and validates the release imports. Run the codec smoke test explicitly
+with:
 
 ```powershell
 $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
@@ -162,10 +320,58 @@ and `.mts` as supported MoviePlayer file types. The MSI is a per-machine
 installer, so Windows requests administrator approval. Release MSI files are
 currently unsigned and can display an unknown-publisher warning.
 
-## License
+## Source layout
 
-MoviePlayer first-party source is licensed under the MIT License. libopus,
-NVIDIA, and the optional native AI libraries/models retain their own licenses;
-see `THIRD_PARTY_NOTICES.md`. The MIT license covers only MoviePlayer's
-first-party code and does not relicense Windows components, SDKs, libraries,
-or models.
+| Path | Contents |
+|---|---|
+| `src/` | Win32 UI, player engine, renderer, RTX VSR, localization, subtitles, and application resources |
+| `src/codec/` | First-party demuxers, codec interfaces, audio decoders, HEVC/DXVA code, and subtitle decoders |
+| `languages/` | Twelve external UTF-8 UI catalogs |
+| `scripts/` | Verified dependency setup, validation, deployment, release, and MSI packaging |
+| `tools/whisper/` | Native AI worker protocol and model-layout documentation |
+| `installer/` | WiX source and installer license UI |
+| `third_party/` | Tracked placeholders; downloaded SDKs, libraries, sources, and models are ignored |
+| `tests/` and `test-assets/` | Codec smoke test and test-media guidance |
+| `docs/` | Technical guide and public screenshot |
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` | Open a video |
+| `Space` | Play or pause |
+| `Left` / `Right` | Seek backward or forward 10 seconds |
+| `Up` / `Down` | Increase or decrease volume |
+| `M` | Mute or unmute |
+| `L` | Toggle loop playback |
+| `F`, `F11`, `Enter`, or `Alt+Enter` | Toggle fullscreen |
+| `Esc` | Leave fullscreen |
+
+## Current limitations
+
+- The player intentionally supports the container/codec combinations listed
+  above rather than every variation accepted by a general-purpose framework.
+- HEVC Main/Main10 playback has no software fallback and requires a matching
+  D3D11/DXVA decoder profile.
+- E-AC-3 and DTS require a compatible DirectShow decoder registered by the
+  user; MoviePlayer does not bundle one.
+- AI subtitle input currently requires MP4 with supported 48 kHz AAC audio,
+  and German is not currently an AI output target.
+- Recognition and translation are resource intensive, and output quality
+  depends on recording quality, speakers, language pair, names, and terminology.
+- RTX Video VSR availability depends on compatible NVIDIA hardware, drivers,
+  input/output conditions, and the proprietary runtime.
+- Windows 7/8 and 32-bit Windows are not supported.
+
+## Third-party and legal notices
+
+MoviePlayer first-party source is licensed under the [MIT License](LICENSE).
+libopus, Windows components, NVIDIA software, native AI libraries, and model
+weights retain their own licenses and terms. The MIT License does not relicense
+those components or grant codec patent or media-content rights.
+
+Read [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the packaged `licenses`
+directory, and `third_party/whisper/LICENSES.md` before redistribution. The
+optional Japanese-to-Korean model remains separate because of its declared
+non-commercial terms. These documents are engineering compliance material,
+not legal advice.
