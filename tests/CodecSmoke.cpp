@@ -12,9 +12,13 @@
 
 #include <d3d10.h>
 #include <d3d11.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
@@ -105,6 +109,296 @@ bool PathsReferToSameFile(const std::filesystem::path& input,
     return _wcsicmp(normalizedInput.c_str(), normalizedOutput.c_str()) == 0;
 }
 
+std::unique_ptr<IAudioDecoder> CreateAudioDecoder(const TrackInfo& track) {
+    if (track.codec == CodecId::Mp3)
+        return std::make_unique<mp3::MfMp3Decoder>();
+    if (track.codec == CodecId::Opus)
+        return std::make_unique<opus::OpusDecoder>();
+    if (track.codec == CodecId::Flac)
+        return std::make_unique<flac::FlacDecoder>();
+    if (track.codec == CodecId::Ac3)
+        return std::make_unique<ac3::Ac3Decoder>();
+    if (track.codec == CodecId::Eac3 || track.codec == CodecId::Dts)
+        return std::make_unique<directshow::DirectShowAudioDecoder>();
+    return std::make_unique<aac::AacLcDecoder>();
+}
+
+bool DecodeCustomAudioWindow(IMediaDemuxer& demuxer, const TrackInfo& track,
+                             double start, double duration,
+                             std::vector<float>& mono, std::uint64_t& filled,
+                             std::wstring& error) {
+    for (const TrackInfo& candidate : demuxer.Tracks()) {
+        if (!demuxer.SetTrackEnabled(candidate.trackId,
+                                     candidate.trackId == track.trackId)) {
+            error = demuxer.LastError();
+            return false;
+        }
+    }
+    double decodeStart = 0.0;
+    if (!demuxer.Seek(start, decodeStart)) {
+        error = demuxer.LastError();
+        return false;
+    }
+    auto decoder = CreateAudioDecoder(track);
+    if (!decoder || !decoder->Initialize(track)) {
+        error = decoder ? decoder->LastError() : L"audio decoder unavailable";
+        return false;
+    }
+    if (track.sampleRate <= 0) {
+        error = L"invalid audio sample rate";
+        return false;
+    }
+    const std::size_t wantedFrames = static_cast<std::size_t>(
+        std::ceil(duration * static_cast<double>(track.sampleRate)));
+    mono.assign(wantedFrames, 0.0F);
+    std::vector<std::uint8_t> present(wantedFrames, 0);
+    const double end = start + duration;
+    for (;;) {
+        EncodedSample sample;
+        bool eof = false;
+        if (!demuxer.ReadNextSample(sample, eof)) {
+            error = demuxer.LastError();
+            return false;
+        }
+        if (eof) break;
+        if (sample.trackId != track.trackId) continue;
+        AudioFrame frame;
+        if (!decoder->Decode(sample, frame)) {
+            error = decoder->LastError();
+            return false;
+        }
+        if (frame.pts >= end + 1.0) break;
+        if (frame.channels <= 0 || frame.sampleRate != track.sampleRate ||
+            frame.samples.size() %
+                    static_cast<std::size_t>(frame.channels) !=
+                0) {
+            error = L"custom decoder returned an invalid PCM frame";
+            return false;
+        }
+        const std::size_t frameCount =
+            frame.samples.size() / static_cast<std::size_t>(frame.channels);
+        for (std::size_t i = 0; i < frameCount; ++i) {
+            const double time =
+                frame.pts + static_cast<double>(i) / frame.sampleRate;
+            if (time < start || time >= end) continue;
+            const auto destination = static_cast<std::int64_t>(std::llround(
+                (time - start) * static_cast<double>(track.sampleRate)));
+            if (destination < 0 ||
+                static_cast<std::size_t>(destination) >= mono.size()) {
+                continue;
+            }
+            double sum = 0.0;
+            for (int channel = 0; channel < frame.channels; ++channel) {
+                sum += frame.samples[i * static_cast<std::size_t>(frame.channels) +
+                                     static_cast<std::size_t>(channel)];
+            }
+            mono[static_cast<std::size_t>(destination)] =
+                static_cast<float>(sum / frame.channels);
+            present[static_cast<std::size_t>(destination)] = 1;
+        }
+    }
+    filled = static_cast<std::uint64_t>(
+        std::count(present.begin(), present.end(), std::uint8_t{1}));
+    return filled != 0;
+}
+
+bool DecodeMfAudioWindow(const std::wstring& path, int sampleRate, double start,
+                         double duration, std::vector<float>& mono,
+                         std::uint64_t& filled, std::wstring& error) {
+    const HRESULT comResult =
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninitializeCom = SUCCEEDED(comResult);
+    if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) {
+        error = L"CoInitializeEx failed";
+        return false;
+    }
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    if (FAILED(hr)) {
+        if (uninitializeCom) CoUninitialize();
+        error = L"MFStartup failed";
+        return false;
+    }
+    bool succeeded = false;
+    {
+        ComPtr<IMFSourceReader> reader;
+        hr = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader);
+        if (FAILED(hr)) {
+            error = L"MFCreateSourceReaderFromURL failed";
+        } else {
+            reader->SetStreamSelection(
+                static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
+            hr = reader->SetStreamSelection(
+                static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM), TRUE);
+            if (FAILED(hr)) error = L"MF audio stream selection failed";
+        }
+
+        ComPtr<IMFMediaType> requested;
+        if (SUCCEEDED(hr)) hr = MFCreateMediaType(&requested);
+        if (SUCCEEDED(hr))
+            hr = requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+        if (SUCCEEDED(hr))
+            hr = requested->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+        if (SUCCEEDED(hr)) hr = requested->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+        if (SUCCEEDED(hr))
+            hr = requested->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND,
+                                      static_cast<UINT32>(sampleRate));
+        if (SUCCEEDED(hr))
+            hr = requested->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32);
+        if (SUCCEEDED(hr))
+            hr = requested->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8);
+        if (SUCCEEDED(hr))
+            hr = requested->SetUINT32(
+                MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                static_cast<UINT32>(sampleRate * 2 * sizeof(float)));
+        if (SUCCEEDED(hr)) {
+            hr = reader->SetCurrentMediaType(
+                static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM),
+                nullptr, requested.Get());
+        }
+        if (FAILED(hr) && error.empty()) {
+            error = L"MF AAC decoder could not produce 48 kHz stereo float PCM";
+        }
+
+        PROPVARIANT position;
+        PropVariantInit(&position);
+        position.vt = VT_I8;
+        position.hVal.QuadPart = static_cast<LONGLONG>(
+            std::llround(start * 10'000'000.0));
+        if (SUCCEEDED(hr)) {
+            hr = reader->SetCurrentPosition(GUID_NULL, position);
+        }
+        PropVariantClear(&position);
+        if (FAILED(hr) && error.empty()) error = L"MF audio seek failed";
+
+        const std::size_t wantedFrames = static_cast<std::size_t>(
+            std::ceil(duration * static_cast<double>(sampleRate)));
+        mono.assign(wantedFrames, 0.0F);
+        std::vector<std::uint8_t> present(wantedFrames, 0);
+        const double end = start + duration;
+        while (SUCCEEDED(hr)) {
+            DWORD actualStream = 0;
+            DWORD flags = 0;
+            LONGLONG timestamp = 0;
+            ComPtr<IMFSample> sample;
+            hr = reader->ReadSample(
+                static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM), 0,
+                &actualStream, &flags, &timestamp, &sample);
+            if (FAILED(hr)) {
+                error = L"MF audio decode failed";
+                break;
+            }
+            if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) break;
+            if (!sample) continue;
+            const double sampleStart =
+                static_cast<double>(timestamp) / 10'000'000.0;
+            if (sampleStart >= end + 1.0) break;
+            ComPtr<IMFMediaBuffer> buffer;
+            hr = sample->ConvertToContiguousBuffer(&buffer);
+            if (FAILED(hr)) {
+                error = L"MF PCM buffer conversion failed";
+                break;
+            }
+            BYTE* bytes = nullptr;
+            DWORD maximumLength = 0;
+            DWORD currentLength = 0;
+            hr = buffer->Lock(&bytes, &maximumLength, &currentLength);
+            if (FAILED(hr) || !bytes) {
+                error = L"MF PCM buffer lock failed";
+                break;
+            }
+            const std::size_t frameCount =
+                currentLength / (2U * sizeof(float));
+            const auto* samples = reinterpret_cast<const float*>(bytes);
+            for (std::size_t i = 0; i < frameCount; ++i) {
+                const double time =
+                    sampleStart + static_cast<double>(i) / sampleRate;
+                if (time < start || time >= end) continue;
+                const auto destination = static_cast<std::int64_t>(std::llround(
+                    (time - start) * static_cast<double>(sampleRate)));
+                if (destination < 0 ||
+                    static_cast<std::size_t>(destination) >= mono.size()) {
+                    continue;
+                }
+                mono[static_cast<std::size_t>(destination)] =
+                    (samples[i * 2U] + samples[i * 2U + 1U]) * 0.5F;
+                present[static_cast<std::size_t>(destination)] = 1;
+            }
+            buffer->Unlock();
+        }
+        if (SUCCEEDED(hr)) {
+            filled = static_cast<std::uint64_t>(
+                std::count(present.begin(), present.end(), std::uint8_t{1}));
+            succeeded = filled != 0;
+            if (!succeeded && error.empty()) error = L"MF returned no PCM data";
+        }
+    }
+    MFShutdown();
+    if (uninitializeCom) CoUninitialize();
+    return succeeded;
+}
+
+std::vector<double> AudioEnergyEnvelope(const std::vector<float>& samples,
+                                        int sampleRate) {
+    const std::size_t framesPerBin =
+        static_cast<std::size_t>((std::max)(1, sampleRate / 100));
+    const std::size_t bins = samples.size() / framesPerBin;
+    std::vector<double> result(bins, 0.0);
+    for (std::size_t bin = 0; bin < bins; ++bin) {
+        double energy = 0.0;
+        const std::size_t begin = bin * framesPerBin;
+        for (std::size_t i = 0; i < framesPerBin; ++i) {
+            const double value = samples[begin + i];
+            energy += value * value;
+        }
+        result[bin] = std::log1p(std::sqrt(energy / framesPerBin) * 1000.0);
+    }
+    return result;
+}
+
+std::pair<int, double> BestEnvelopeLag(const std::vector<double>& custom,
+                                       const std::vector<double>& reference,
+                                       std::size_t begin, std::size_t count,
+                                       int maximumLag) {
+    int bestLag = 0;
+    double bestCorrelation = -2.0;
+    for (int lag = -maximumLag; lag <= maximumLag; ++lag) {
+        if (lag < 0 && begin < static_cast<std::size_t>(-lag)) continue;
+        const std::size_t referenceBegin =
+            lag < 0 ? begin - static_cast<std::size_t>(-lag)
+                    : begin + static_cast<std::size_t>(lag);
+        if (begin + count > custom.size() ||
+            referenceBegin + count > reference.size()) {
+            continue;
+        }
+        double customMean = 0.0;
+        double referenceMean = 0.0;
+        for (std::size_t i = 0; i < count; ++i) {
+            customMean += custom[begin + i];
+            referenceMean += reference[referenceBegin + i];
+        }
+        customMean /= count;
+        referenceMean /= count;
+        double numerator = 0.0;
+        double customEnergy = 0.0;
+        double referenceEnergy = 0.0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const double a = custom[begin + i] - customMean;
+            const double b = reference[referenceBegin + i] - referenceMean;
+            numerator += a * b;
+            customEnergy += a * a;
+            referenceEnergy += b * b;
+        }
+        const double denominator = std::sqrt(customEnergy * referenceEnergy);
+        const double correlation = denominator > 0.0 ? numerator / denominator
+                                                      : -1.0;
+        if (correlation > bestCorrelation) {
+            bestCorrelation = correlation;
+            bestLag = lag;
+        }
+    }
+    return {bestLag, bestCorrelation};
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -118,6 +412,9 @@ int wmain(int argc, wchar_t** argv) {
                       L"--frame-probe[=FRAMES] | "
                       L"--component-probe[=AUDIO_TRACK] | "
                       L"--video-component-probe | "
+                      L"--video-throughput-probe=SECONDS | "
+                      L"--audio-timeline-probe | "
+                      L"--audio-reference-probe=START,DURATION | "
                       L"--end-probe | "
                       L"--dump-audio=OUTPUT.f32le\n";
         return 2;
@@ -149,6 +446,12 @@ int wmain(int argc, wchar_t** argv) {
     unsigned frameProbeLimit = 300;
     bool componentProbeOnly = false;
     bool videoComponentProbeOnly = false;
+    bool videoThroughputProbeOnly = false;
+    double videoThroughputProbeTime = 0.0;
+    bool audioTimelineProbeOnly = false;
+    bool audioReferenceProbeOnly = false;
+    double audioReferenceStart = 0.0;
+    double audioReferenceDuration = 0.0;
     bool endProbeOnly = false;
     bool subtitleProbeOnly = false;
     double subtitleProbeTime = 0.0;
@@ -161,6 +464,10 @@ int wmain(int argc, wchar_t** argv) {
         constexpr wchar_t timelineProbePrefix[] = L"--timeline-probe=";
         constexpr wchar_t frameProbePrefix[] = L"--frame-probe=";
         constexpr wchar_t componentProbePrefix[] = L"--component-probe=";
+        constexpr wchar_t throughputProbePrefix[] =
+            L"--video-throughput-probe=";
+        constexpr wchar_t audioReferenceProbePrefix[] =
+            L"--audio-reference-probe=";
         if (option == L"--probe") {
             probeOnly = true;
         } else if (option == L"--end-probe") {
@@ -207,6 +514,43 @@ int wmain(int argc, wchar_t** argv) {
             }
         } else if (option == L"--video-component-probe") {
             videoComponentProbeOnly = true;
+        } else if (option.rfind(throughputProbePrefix, 0) == 0) {
+            try {
+                videoThroughputProbeTime = std::stod(
+                    option.substr(std::size(throughputProbePrefix) - 1U));
+                if (!std::isfinite(videoThroughputProbeTime) ||
+                    videoThroughputProbeTime < 0.0) {
+                    throw std::out_of_range("time");
+                }
+                videoThroughputProbeOnly = true;
+            } catch (const std::exception&) {
+                std::wcerr << L"invalid video throughput probe time\n";
+                return 2;
+            }
+        } else if (option == L"--audio-timeline-probe") {
+            audioTimelineProbeOnly = true;
+        } else if (option.rfind(audioReferenceProbePrefix, 0) == 0) {
+            try {
+                const std::wstring values = option.substr(
+                    std::size(audioReferenceProbePrefix) - 1U);
+                const std::size_t comma = values.find(L',');
+                if (comma == std::wstring::npos) {
+                    throw std::invalid_argument("missing duration");
+                }
+                audioReferenceStart = std::stod(values.substr(0, comma));
+                audioReferenceDuration = std::stod(values.substr(comma + 1U));
+                if (!std::isfinite(audioReferenceStart) ||
+                    !std::isfinite(audioReferenceDuration) ||
+                    audioReferenceStart < 0.0 ||
+                    audioReferenceDuration < 20.0 ||
+                    audioReferenceDuration > 600.0) {
+                    throw std::out_of_range("audio reference window");
+                }
+                audioReferenceProbeOnly = true;
+            } catch (const std::exception&) {
+                std::wcerr << L"invalid audio reference probe window\n";
+                return 2;
+            }
         } else if (option == L"--subtitle-probe") {
             subtitleProbeOnly = true;
         } else if (option.rfind(L"--subtitle-probe=", 0) == 0) {
@@ -387,8 +731,182 @@ int wmain(int argc, wchar_t** argv) {
                    << L" max-ctts=" << maximumOffset << L"\n";
         return 0;
     }
+    if (audioTimelineProbeOnly) {
+        if (!audioTrack) {
+            std::wcerr << L"no supported audio track for timeline probe\n";
+            return 30;
+        }
+        for (const TrackInfo& track : demuxer->Tracks()) {
+            demuxer->SetTrackEnabled(track.trackId,
+                                     track.trackId == audioTrack->trackId);
+        }
+        auto audio = CreateAudioDecoder(*audioTrack);
+        if (!audio->Initialize(*audioTrack)) {
+            std::wcerr << L"audio timeline decoder init failed: "
+                       << audio->LastError() << L"\n";
+            return 30;
+        }
+
+        std::uint64_t packets = 0;
+        std::uint64_t decodedFrames = 0;
+        std::uint64_t decodedSamples = 0;
+        std::uint64_t failures = 0;
+        bool haveTimeline = false;
+        double firstPts = 0.0;
+        double expectedPts = 0.0;
+        double maximumGap = 0.0;
+        double maximumOverlap = 0.0;
+        double maximumPacketPtsError = 0.0;
+        for (;;) {
+            EncodedSample sample;
+            bool eof = false;
+            if (!demuxer->ReadNextSample(sample, eof)) {
+                std::wcerr << L"audio timeline demux failed: "
+                           << demuxer->LastError() << L"\n";
+                return 31;
+            }
+            if (eof) break;
+            if (sample.trackId != audioTrack->trackId) continue;
+            ++packets;
+            AudioFrame frame;
+            if (!audio->Decode(sample, frame)) {
+                ++failures;
+                std::wcerr << L"audio timeline decode failure packet="
+                           << packets << L" pts=" << sample.PtsSeconds()
+                           << L" error=" << audio->LastError() << L"\n";
+                audio->Reset();
+                continue;
+            }
+            if (frame.samples.empty()) continue;
+            if (frame.channels <= 0 || frame.sampleRate <= 0 ||
+                frame.samples.size() % static_cast<std::size_t>(frame.channels) != 0) {
+                std::wcerr << L"audio timeline decoder returned an invalid frame\n";
+                return 32;
+            }
+            const std::uint64_t frameSamples =
+                frame.samples.size() / static_cast<std::size_t>(frame.channels);
+            const double frameDuration =
+                static_cast<double>(frameSamples) / frame.sampleRate;
+            maximumPacketPtsError = std::max(
+                maximumPacketPtsError,
+                std::abs(frame.pts - sample.PtsSeconds()));
+            if (!haveTimeline) {
+                firstPts = frame.pts;
+                haveTimeline = true;
+            } else {
+                const double discontinuity = frame.pts - expectedPts;
+                maximumGap = std::max(maximumGap, discontinuity);
+                maximumOverlap = std::max(maximumOverlap, -discontinuity);
+            }
+            expectedPts = frame.pts + frameDuration;
+            decodedSamples += frameSamples;
+            ++decodedFrames;
+            if ((packets % 20000U) == 0U) {
+                std::wcout << L"audio-timeline-progress packets=" << packets
+                           << L" pts=" << frame.pts << L"\n";
+            }
+        }
+        const double decodedDuration =
+            audioTrack->sampleRate > 0
+                ? static_cast<double>(decodedSamples) / audioTrack->sampleRate
+                : 0.0;
+        const double trackEnd = firstPts + decodedDuration;
+        const double durationError =
+            std::abs(trackEnd - audioTrack->DurationSeconds());
+        std::wcout << L"audio-timeline-summary packets=" << packets
+                   << L" frames=" << decodedFrames
+                   << L" samples=" << decodedSamples
+                   << L" first-pts=" << firstPts
+                   << L" last-end=" << expectedPts
+                   << L" max-gap-ms=" << maximumGap * 1000.0
+                   << L" max-overlap-ms=" << maximumOverlap * 1000.0
+                   << L" max-packet-pts-error-ms="
+                   << maximumPacketPtsError * 1000.0
+                   << L" duration-error-ms=" << durationError * 1000.0
+                   << L" failures=" << failures << L"\n";
+        return failures == 0 && packets == decodedFrames &&
+                       maximumGap < 0.0001 && maximumOverlap < 0.0001 &&
+                       maximumPacketPtsError < 0.0001 && durationError < 0.001
+                   ? 0
+                   : 33;
+    }
+    if (audioReferenceProbeOnly) {
+        if (!audioTrack || audioTrack->sampleRate <= 0) {
+            std::wcerr << L"no supported audio track for reference probe\n";
+            return 34;
+        }
+        std::vector<float> custom;
+        std::vector<float> reference;
+        std::uint64_t customFilled = 0;
+        std::uint64_t referenceFilled = 0;
+        std::wstring error;
+        if (!DecodeCustomAudioWindow(*demuxer, *audioTrack,
+                                     audioReferenceStart,
+                                     audioReferenceDuration, custom,
+                                     customFilled, error)) {
+            std::wcerr << L"custom audio window decode failed: " << error
+                       << L"\n";
+            return 35;
+        }
+        if (!DecodeMfAudioWindow(inputPath, audioTrack->sampleRate,
+                                 audioReferenceStart,
+                                 audioReferenceDuration, reference,
+                                 referenceFilled, error)) {
+            std::wcerr << L"MF audio window decode failed: " << error
+                       << L"\n";
+            return 36;
+        }
+        const auto customEnvelope =
+            AudioEnergyEnvelope(custom, audioTrack->sampleRate);
+        const auto referenceEnvelope =
+            AudioEnergyEnvelope(reference, audioTrack->sampleRate);
+        constexpr std::size_t kAnalysisBins = 1200U;
+        constexpr std::size_t kStepBins = 1000U;
+        constexpr int kMaximumLagBins = 200;
+        int minimumDelay = (std::numeric_limits<int>::max)();
+        int maximumDelay = (std::numeric_limits<int>::min)();
+        double minimumCorrelation = 1.0;
+        unsigned windows = 0;
+        for (std::size_t begin = 200U;
+             begin + kAnalysisBins +
+                     static_cast<std::size_t>(kMaximumLagBins) <=
+                 customEnvelope.size() &&
+             begin + kAnalysisBins +
+                     static_cast<std::size_t>(kMaximumLagBins) <=
+                 referenceEnvelope.size();
+             begin += kStepBins) {
+            const auto [lag, correlation] = BestEnvelopeLag(
+                customEnvelope, referenceEnvelope, begin, kAnalysisBins,
+                kMaximumLagBins);
+            const int customDelayMilliseconds = -lag * 10;
+            minimumDelay = std::min(minimumDelay, customDelayMilliseconds);
+            maximumDelay = std::max(maximumDelay, customDelayMilliseconds);
+            minimumCorrelation = std::min(minimumCorrelation, correlation);
+            ++windows;
+            std::wcout << L"audio-reference-window media="
+                       << audioReferenceStart +
+                              static_cast<double>(begin) / 100.0
+                       << L" custom-content-delay-ms="
+                       << customDelayMilliseconds << L" correlation="
+                       << correlation << L"\n";
+        }
+        std::wcout << L"audio-reference-summary start="
+                   << audioReferenceStart << L" duration="
+                   << audioReferenceDuration << L" custom-filled="
+                   << customFilled << L" reference-filled="
+                   << referenceFilled << L" windows=" << windows
+                   << L" min-delay-ms=" << minimumDelay
+                   << L" max-delay-ms=" << maximumDelay
+                   << L" delay-span-ms=" << maximumDelay - minimumDelay
+                   << L" min-correlation=" << minimumCorrelation << L"\n";
+        return windows != 0 && minimumCorrelation > 0.50 &&
+                       maximumDelay - minimumDelay <= 100
+                   ? 0
+                   : 37;
+    }
     const bool needsAudio =
-        !frameProbeOnly && !videoComponentProbeOnly && !endProbeOnly;
+        !frameProbeOnly && !videoComponentProbeOnly &&
+        !videoThroughputProbeOnly && !endProbeOnly;
     if (!videoTrack || (needsAudio && !audioTrack)) {
         std::wcerr << L"expected the requested supported media tracks\n";
         return 4;
@@ -512,6 +1030,105 @@ int wmain(int argc, wchar_t** argv) {
         return 6;
     }
     std::wcout << L"decoder: " << video->Description() << L"\n";
+    if (videoThroughputProbeOnly) {
+        for (const TrackInfo& track : demuxer->Tracks()) {
+            demuxer->SetTrackEnabled(track.trackId,
+                                     track.trackId == videoTrack->trackId);
+        }
+        double decodeStart = 0.0;
+        if (!demuxer->Seek(videoThroughputProbeTime, decodeStart) ||
+            !video->Reset()) {
+            std::wcerr << L"throughput probe seek/reset failed: "
+                       << demuxer->LastError() << L"\n";
+            return 34;
+        }
+        constexpr double probeMediaDuration = 60.0;
+        const double probeEnd = std::min(
+            demuxer->DurationSeconds(),
+            videoThroughputProbeTime + probeMediaDuration);
+        std::deque<std::shared_ptr<VideoFrame>> retainedFrames;
+        std::uint64_t decodedFrames = 0;
+        std::uint64_t timestampAnomalies = 0;
+        double previousDecoderPts =
+            std::numeric_limits<double>::quiet_NaN();
+        const auto beginning = std::chrono::steady_clock::now();
+        bool complete = false;
+        while (!complete) {
+            EncodedSample sample;
+            bool eof = false;
+            if (!demuxer->ReadNextSample(sample, eof)) {
+                std::wcerr << L"throughput probe demux failed: "
+                           << demuxer->LastError() << L"\n";
+                return 35;
+            }
+            if (eof) break;
+            if (sample.trackId != videoTrack->trackId) continue;
+            std::vector<std::shared_ptr<VideoFrame>> frames;
+            if (!video->Decode(sample, frames)) {
+                std::wcerr << L"throughput probe decode failed: "
+                           << video->LastError() << L"\n";
+                return 36;
+            }
+            for (const auto& frame : frames) {
+                if (!frame || !frame->texture) return 36;
+                const bool decoderRegressed =
+                    std::isfinite(frame->decoderPts) &&
+                    std::isfinite(previousDecoderPts) &&
+                    frame->decoderPts + 0.001 < previousDecoderPts;
+                const bool timestampDiverged =
+                    std::isfinite(frame->decoderPts) &&
+                    std::abs(frame->decoderPts - frame->pts) > 0.050;
+                if ((decoderRegressed || timestampDiverged ||
+                     frame->synthesizedPts) &&
+                    timestampAnomalies < 120U) {
+                    std::wcout << L"video-timestamp-anomaly index="
+                               << decodedFrames << L" pts=" << frame->pts
+                               << L" decoder-pts=" << frame->decoderPts
+                               << L" previous-decoder-pts="
+                               << previousDecoderPts << L" regressed="
+                               << (decoderRegressed ? 1 : 0)
+                               << L" synthesized="
+                               << (frame->synthesizedPts ? 1 : 0) << L"\n";
+                    ++timestampAnomalies;
+                }
+                if (std::isfinite(frame->decoderPts))
+                    previousDecoderPts = frame->decoderPts;
+                retainedFrames.push_back(frame);
+                while (retainedFrames.size() > 9U)
+                    retainedFrames.pop_front();
+                if (frame->pts >= videoThroughputProbeTime) ++decodedFrames;
+                if (frame->pts >= probeEnd) {
+                    complete = true;
+                    break;
+                }
+            }
+        }
+
+        D3D11_QUERY_DESC queryDescription = {};
+        queryDescription.Query = D3D11_QUERY_EVENT;
+        ComPtr<ID3D11Query> completionQuery;
+        if (FAILED(device->CreateQuery(&queryDescription, &completionQuery)))
+            return 37;
+        context->End(completionQuery.Get());
+        context->Flush();
+        while (context->GetData(completionQuery.Get(), nullptr, 0, 0) ==
+               S_FALSE) {
+            Sleep(1);
+        }
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - beginning).count();
+        const double framesPerSecond =
+            elapsed > 0.0 ? decodedFrames / elapsed : 0.0;
+        std::wcout << L"video-throughput-probe target="
+                   << videoThroughputProbeTime
+                   << L" decode-start=" << decodeStart
+                   << L" media-seconds="
+                   << (probeEnd - videoThroughputProbeTime)
+                   << L" frames=" << decodedFrames
+                   << L" elapsed=" << elapsed
+                   << L" fps=" << framesPerSecond << L"\n";
+        return complete && framesPerSecond >= 30.0 ? 0 : 38;
+    }
     if (endProbeOnly) {
         for (const TrackInfo& track : demuxer->Tracks()) {
             demuxer->SetTrackEnabled(track.trackId,
@@ -591,20 +1208,7 @@ int wmain(int argc, wchar_t** argv) {
 
     std::unique_ptr<IAudioDecoder> audio;
     if (needsAudio) {
-        if (audioTrack->codec == CodecId::Mp3)
-            audio = std::make_unique<mp3::MfMp3Decoder>();
-        else if (audioTrack->codec == CodecId::Opus)
-            audio = std::make_unique<opus::OpusDecoder>();
-        else if (audioTrack->codec == CodecId::Flac)
-            audio = std::make_unique<flac::FlacDecoder>();
-        else if (audioTrack->codec == CodecId::Ac3)
-            audio = std::make_unique<ac3::Ac3Decoder>();
-        else if (audioTrack->codec == CodecId::Eac3 ||
-                 audioTrack->codec == CodecId::Dts)
-            audio =
-                std::make_unique<directshow::DirectShowAudioDecoder>();
-        else
-            audio = std::make_unique<aac::AacLcDecoder>();
+        audio = CreateAudioDecoder(*audioTrack);
         if (!audio->Initialize(*audioTrack)) {
             std::wcerr << L"audio init failed: " << audio->LastError()
                        << L"\n";

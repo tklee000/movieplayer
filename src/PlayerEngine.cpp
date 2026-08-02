@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <sstream>
@@ -137,9 +139,18 @@ public:
         condition_.notify_all();
     }
 
+    std::size_t Size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return packets_.size();
+    }
+
 private:
-    static constexpr std::size_t kMaximumPackets = 96;
-    std::mutex mutex_;
+    // A single demux thread feeds both tracks. With only 96 packets, the
+    // faster AAC cadence could fill its queue and throttle demuxing at audio
+    // speed before the next video packets were delivered. Keep enough encoded
+    // data ahead to absorb disk/interleave bursts without dropping audio.
+    static constexpr std::size_t kMaximumPackets = 512;
+    mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<EncodedSample> packets_;
     bool aborted_ = false;
@@ -165,16 +176,22 @@ public:
     }
 
     std::shared_ptr<DecodedVideoFrame> Acquire(double clock, bool paused,
-                                                bool force) {
+                                                bool force,
+                                                std::size_t& skippedFrames) {
         std::lock_guard<std::mutex> lock(mutex_);
+        skippedFrames = 0;
         if (frames_.empty()) return nullptr;
-        if (!force && !paused && frames_.front()->pts > clock + 0.010) return nullptr;
+        // The PTS marks the beginning of the frame's presentation interval.
+        // Never select a future frame: doing so made pictures lead the
+        // audible-audio clock by up to 10 ms before the renderer presented it.
+        if (!force && !paused && frames_.front()->pts > clock) return nullptr;
         std::shared_ptr<DecodedVideoFrame> result = frames_.front();
         frames_.pop_front();
         if (!paused) {
-            while (!frames_.empty() && frames_.front()->pts <= clock + 0.010) {
+            while (!frames_.empty() && frames_.front()->pts <= clock) {
                 result = frames_.front();
                 frames_.pop_front();
+                ++skippedFrames;
             }
         }
         condition_.notify_all();
@@ -197,6 +214,11 @@ public:
     bool Empty() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return frames_.empty();
+    }
+
+    std::size_t Size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frames_.size();
     }
 
 private:
@@ -260,6 +282,9 @@ struct PlayerEngine::Impl {
     std::atomic<bool> forceNextFrame{false};
     std::atomic<double> seekFloor{0.0};
     std::atomic<double> displayedPts{0.0};
+    std::atomic<double> displayedDecoderPts{
+        std::numeric_limits<double>::quiet_NaN()};
+    std::atomic<bool> displayedSynthesizedPts{false};
     std::atomic<double> pausedPosition{0.0};
     std::atomic<double> externalClockBaseSeconds{0.0};
     std::chrono::steady_clock::time_point wallClockBase =
@@ -277,6 +302,102 @@ struct PlayerEngine::Impl {
     std::wstring asyncError;
     mutable std::mutex errorMutex;
     std::mutex controlMutex;
+    std::ostringstream videoSyncDiagnostics;
+    std::filesystem::path videoSyncDiagnosticsPath;
+    std::mutex videoSyncDiagnosticsMutex;
+    std::atomic<std::uint64_t> lastVideoSyncDiagnosticsTick{0};
+    std::atomic<std::uint64_t> acquiredVideoFramesSinceLog{0};
+    std::atomic<std::uint64_t> skippedVideoFramesSinceLog{0};
+    std::atomic<std::uint64_t> totalSkippedVideoFrames{0};
+    std::atomic<std::uint64_t> lastAcquireVideoTick{0};
+    std::atomic<std::uint64_t> maxAcquireGapSinceLog{0};
+    std::atomic<std::uint64_t> acquireCallsSinceLog{0};
+
+    void OpenVideoSyncDiagnostics() {
+        // This diagnostic build always records the displayed-video clock so
+        // an Explorer launch captures the same run as the audio log.
+        wchar_t temporaryPath[MAX_PATH] = {};
+        const DWORD pathLength = GetTempPathW(
+            static_cast<DWORD>(std::size(temporaryPath)), temporaryPath);
+        if (pathLength == 0 || pathLength >= std::size(temporaryPath)) return;
+        std::lock_guard<std::mutex> lock(videoSyncDiagnosticsMutex);
+        lastVideoSyncDiagnosticsTick.store(0);
+        acquiredVideoFramesSinceLog.store(0);
+        skippedVideoFramesSinceLog.store(0);
+        totalSkippedVideoFrames.store(0);
+        lastAcquireVideoTick.store(0);
+        maxAcquireGapSinceLog.store(0);
+        acquireCallsSinceLog.store(0);
+        videoSyncDiagnosticsPath =
+            std::filesystem::path(temporaryPath) /
+            L"MoviePlayer-video-sync.csv";
+        videoSyncDiagnostics.str({});
+        videoSyncDiagnostics.clear();
+        videoSyncDiagnostics
+            << "wall_ms,audio_clock,seek_target,displayed_video_pts,"
+               "video_minus_audio_ms,video_frames_queued,"
+               "video_packets_queued,audio_packets_queued,"
+               "audio_buffers_queued,use_audio_clock,has_audio_clock,"
+               "playback_speed,audio_finished,video_finished,"
+               "demux_finished,frames_acquired,frames_skipped,"
+               "total_frames_skipped,acquire_calls,max_acquire_gap_ms,"
+               "decoder_output_pts,decoder_minus_assigned_ms,"
+               "synthesized_video_pts\n";
+    }
+
+    void CloseVideoSyncDiagnostics() {
+        std::lock_guard<std::mutex> lock(videoSyncDiagnosticsMutex);
+        if (!videoSyncDiagnosticsPath.empty()) {
+            std::ofstream output(videoSyncDiagnosticsPath,
+                                 std::ios::out | std::ios::trunc);
+            if (output) output << videoSyncDiagnostics.str();
+        }
+        videoSyncDiagnosticsPath.clear();
+        videoSyncDiagnostics.str({});
+        videoSyncDiagnostics.clear();
+        lastVideoSyncDiagnosticsTick.store(0);
+    }
+
+    void LogVideoSync(double clock) {
+        const std::uint64_t now = GetTickCount64();
+        std::uint64_t previous = lastVideoSyncDiagnosticsTick.load();
+        if (now - previous < 100U ||
+            !lastVideoSyncDiagnosticsTick.compare_exchange_strong(previous,
+                                                                   now)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(videoSyncDiagnosticsMutex);
+        if (videoSyncDiagnosticsPath.empty()) return;
+        const double videoPts = displayedPts.load();
+        videoSyncDiagnostics << now << ',' << clock << ',' << seekFloor.load()
+                             << ',' << videoPts << ','
+                             << (videoPts - clock) * 1000.0 << ','
+                             << videoFrames.Size() << ','
+                             << videoPackets.Size() << ','
+                             << audioPackets.Size() << ','
+                             << audioOutput.QueuedBuffers() << ','
+                             << (useAudioClock.load() ? 1 : 0) << ','
+                             << (audioOutput.HasClock() ? 1 : 0) << ','
+                             << speed << ','
+                             << (audioFinished.load() ? 1 : 0) << ','
+                             << (videoFinished.load() ? 1 : 0) << ','
+                             << (demuxFinished.load() ? 1 : 0) << ','
+                             << acquiredVideoFramesSinceLog.exchange(0) << ','
+                             << skippedVideoFramesSinceLog.exchange(0) << ','
+                             << totalSkippedVideoFrames.load() << ','
+                             << acquireCallsSinceLog.exchange(0) << ','
+                             << maxAcquireGapSinceLog.exchange(0) << ',';
+        const double decoderPts = displayedDecoderPts.load();
+        if (std::isfinite(decoderPts)) {
+            videoSyncDiagnostics << decoderPts << ','
+                                 << (decoderPts - videoPts) * 1000.0;
+        } else {
+            videoSyncDiagnostics << ",";
+        }
+        videoSyncDiagnostics << ','
+                             << (displayedSynthesizedPts.load() ? 1 : 0)
+                             << '\n';
+    }
 
     void SetError(const std::wstring& value) {
         std::lock_guard<std::mutex> lock(errorMutex);
@@ -522,6 +643,7 @@ struct PlayerEngine::Impl {
         BuildDescription();
         paused.store(false);
         opened.store(true);
+        OpenVideoSyncDiagnostics();
         if (!StartWorkers(0.0)) {
             CloseUnlocked();
             return false;
@@ -531,6 +653,7 @@ struct PlayerEngine::Impl {
 
     void CloseUnlocked() {
         StopWorkers();
+        CloseVideoSyncDiagnostics();
         opened.store(false);
         audioOutput.Shutdown();
         audioDecoder.reset();
@@ -567,6 +690,9 @@ struct PlayerEngine::Impl {
         useAudioClock.store(hasAudio);
         seekFloor.store(target);
         displayedPts.store(target);
+        displayedDecoderPts.store(
+            std::numeric_limits<double>::quiet_NaN());
+        displayedSynthesizedPts.store(false);
         forceNextFrame.store(true);
         videoPackets.Reset();
         audioPackets.Reset();
@@ -706,7 +832,7 @@ struct PlayerEngine::Impl {
                 break;
             }
             for (auto& frame : decoded) {
-                if (frame->pts + frame->duration < seekFloor.load() - 0.010) continue;
+                if (frame->pts + frame->duration <= seekFloor.load()) continue;
                 if (!videoFrames.Push(std::move(frame))) break;
             }
             // H.264 EOF drain is intentionally batched so delayed pictures
@@ -743,12 +869,29 @@ struct PlayerEngine::Impl {
             }
             consecutiveDecodeFailures = 0;
             if (frame.samples.empty()) continue;
-            const double frameDuration = frame.channels > 0 && frame.sampleRate > 0
-                                             ? static_cast<double>(frame.samples.size() /
-                                                                   frame.channels) /
-                                                   frame.sampleRate
-                                             : 0.0;
-            if (frame.pts + frameDuration < seekFloor.load() - 0.010) continue;
+            if (frame.channels <= 0 || frame.sampleRate <= 0) continue;
+            const std::size_t sampleFrames =
+                frame.samples.size() / static_cast<std::size_t>(frame.channels);
+            if (sampleFrames == 0) continue;
+            const double target = seekFloor.load();
+            const double frameDuration =
+                static_cast<double>(sampleFrames) / frame.sampleRate;
+            if (frame.pts + frameDuration <= target) continue;
+            if (frame.pts < target) {
+                const double exactFrames =
+                    (target - frame.pts) * frame.sampleRate;
+                const std::size_t trimFrames = std::min(
+                    sampleFrames,
+                    static_cast<std::size_t>(
+                        std::ceil(std::max(0.0, exactFrames - 1e-9))));
+                if (trimFrames >= sampleFrames) continue;
+                frame.samples.erase(
+                    frame.samples.begin(),
+                    frame.samples.begin() +
+                        trimFrames * static_cast<std::size_t>(frame.channels));
+                frame.pts +=
+                    static_cast<double>(trimFrames) / frame.sampleRate;
+            }
             const auto pcm = FloatToPcm16(frame);
             if (!audioOutput.Submit(pcm.data(), pcm.size(), frame.pts)) {
                 useAudioClock.store(false);
@@ -1066,13 +1209,35 @@ int PlayerEngine::VideoHeight() const { return impl_->height; }
 
 std::shared_ptr<DecodedVideoFrame> PlayerEngine::AcquireVideoFrame() {
     if (!impl_->opened.load()) return nullptr;
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t previousTick = impl_->lastAcquireVideoTick.exchange(now);
+    if (previousTick != 0 && now >= previousTick) {
+        const std::uint64_t gap = now - previousTick;
+        std::uint64_t maximum = impl_->maxAcquireGapSinceLog.load();
+        while (gap > maximum &&
+               !impl_->maxAcquireGapSinceLog.compare_exchange_weak(maximum,
+                                                                    gap)) {
+        }
+    }
+    impl_->acquireCallsSinceLog.fetch_add(1);
     const bool force = impl_->forceNextFrame.exchange(false);
-    auto frame = impl_->videoFrames.Acquire(impl_->CurrentPosition(),
-                                            impl_->paused.load(), force);
+    const double clock = impl_->CurrentPosition();
+    std::size_t skippedFrames = 0;
+    auto frame = impl_->videoFrames.Acquire(clock,
+                                            impl_->paused.load(), force,
+                                            skippedFrames);
     if (frame) {
+        impl_->acquiredVideoFramesSinceLog.fetch_add(1);
         impl_->displayedPts.store(frame->pts);
+        impl_->displayedDecoderPts.store(frame->decoderPts);
+        impl_->displayedSynthesizedPts.store(frame->synthesizedPts);
         if (impl_->paused.load()) impl_->pausedPosition.store(frame->pts);
     }
+    if (skippedFrames != 0) {
+        impl_->skippedVideoFramesSinceLog.fetch_add(skippedFrames);
+        impl_->totalSkippedVideoFrames.fetch_add(skippedFrames);
+    }
+    impl_->LogVideoSync(clock);
     return frame;
 }
 

@@ -53,6 +53,9 @@ D3D11 scaling without stopping playback.
 
 See [the technical guide](docs/MoviePlayer-Wiki.md) for the full architecture,
 implementation ownership, acceleration requirements, and fallback matrix.
+The investigation and validation history for the H.264 A/V synchronization
+fix is recorded in
+[H.264 A/V Sync and Video Corruption Fix History](docs/H264-AV-Sync-Fix-History.md).
 
 ## Current playback scope
 

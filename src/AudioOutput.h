@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -39,6 +40,7 @@ public:
 private:
     struct AudioBlock {
         std::vector<uint8_t> bytes;
+        std::uint64_t sampleFrames = 0;
     };
 
     class VoiceCallback final : public IXAudio2VoiceCallback {
@@ -77,6 +79,9 @@ private:
     std::condition_variable queueCv_;
     std::unordered_set<AudioBlock*> liveBlocks_;
     static constexpr size_t kMaxQueuedBuffers = 24;
+    std::atomic<std::uint64_t> queuedSampleFrames_{0};
+    std::atomic<std::uint64_t> totalSubmittedSampleFrames_{0};
+    std::atomic<double> lastSubmittedEndPts_{0.0};
 
     std::atomic<bool> abort_{false};
     std::atomic<bool> paused_{false};
@@ -85,5 +90,15 @@ private:
     std::atomic<float> speed_{1.0f};
     std::atomic<bool> hasClock_{false};
     std::atomic<double> basePts_{0.0};
+    // SamplesPlayed is the advancing audio-master clock. The approximate
+    // device latency is low-pass filtered so its approximate observations do
+    // not make video jump, without biasing the clock early or late.
+    mutable std::atomic<bool> latencyInitialized_{false};
+    mutable std::atomic<double> filteredLatencySamples_{0.0};
+    mutable std::atomic<double> lastClockSeconds_{0.0};
+    mutable std::atomic<std::uint64_t> lastDiagnosticsTick_{0};
+    mutable std::mutex diagnosticsMutex_;
+    mutable std::ostringstream diagnostics_;
+    std::wstring diagnosticsPath_;
     std::wstring lastError_;
 };

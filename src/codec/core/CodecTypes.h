@@ -167,6 +167,10 @@ struct VideoFrame {
     bool topFieldFirst = false;
     double pts = 0.0;
     double duration = 0.0;
+    // Timestamp carried by the decoded output sample before any compatibility
+    // fallback is applied. NaN means that the decoder supplied no timestamp.
+    double decoderPts = std::numeric_limits<double>::quiet_NaN();
+    bool synthesizedPts = false;
 };
 
 struct AudioFrame {

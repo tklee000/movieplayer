@@ -959,9 +959,17 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
                                          : 0;
 
         ComPtr<IDXGIDevice> dxgiDevice;
+        ComPtr<IDXGIDevice1> dxgiDevice1;
         ComPtr<IDXGIAdapter> adapter;
         ComPtr<IDXGIFactory> factory;
         hr = device.As(&dxgiDevice);
+        if (SUCCEEDED(device.As(&dxgiDevice1)) && dxgiDevice1) {
+            // Keep DXGI from accumulating old video frames while the UI
+            // thread is briefly busy. A deep presentation queue looks like a
+            // stutter followed by accelerated catch-up even though media time
+            // itself remains correct.
+            dxgiDevice1->SetMaximumFrameLatency(1);
+        }
         if (SUCCEEDED(hr)) {
             hr = dxgiDevice->GetAdapter(&adapter);
         }
@@ -985,8 +993,14 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
         swapDesc.BufferCount = 2;
         swapDesc.OutputWindow = window;
         swapDesc.Windowed = TRUE;
-        swapDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         hr = factory->CreateSwapChain(device.Get(), &swapDesc, &swapChain);
+        if (FAILED(hr)) {
+            // Preserve compatibility with an older DXGI runtime while using
+            // the low-latency flip model on current Windows versions.
+            swapDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+            hr = factory->CreateSwapChain(device.Get(), &swapDesc, &swapChain);
+        }
         if (FAILED(hr)) {
             ResetD3D();
             return Fail(L"IDXGIFactory::CreateSwapChain", hr);

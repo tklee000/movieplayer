@@ -353,7 +353,19 @@ set_target_properties(MoviePlayer PROPERTIES
 )
 
 add_executable(MovieCodecSmoke EXCLUDE_FROM_ALL tests/CodecSmoke.cpp)
-target_link_libraries(MovieCodecSmoke PRIVATE MovieCodecAudio MovieCodecVideo d3d10 d3d11)
+target_link_libraries(MovieCodecSmoke PRIVATE MovieCodecAudio MovieCodecVideo
+    d3d10 d3d11 mfreadwrite)
 if(MSVC)
     target_compile_options(MovieCodecSmoke PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+
+add_executable(MfReferencePlayer WIN32 EXCLUDE_FROM_ALL
+    tests/MfReferencePlayer.cpp)
+target_compile_definitions(MfReferencePlayer PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+target_link_libraries(MfReferencePlayer PRIVATE
+    mfplay mfplat mfuuid ole32 shell32 gdi32)
+if(MSVC)
+    target_compile_options(MfReferencePlayer PRIVATE
+        /W4 /permissive- /utf-8 /EHsc)
 endif()

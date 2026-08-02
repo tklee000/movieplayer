@@ -196,12 +196,10 @@ struct MfH264Decoder::Impl {
     ComPtr<IMFSourceReader> sourceReader;
     ComPtr<IMFMediaType> outputType;
     std::vector<Surface> surfaces;
-    // The Media Foundation decoder emits H.264 pictures in display order, but
-    // it preserves timestamps attached to compressed samples. Some MP4 files
-    // contain B pictures without a ctts table, so those timestamps still
-    // describe decode order and move backwards at the decoder output. Assign
-    // the earliest submitted presentation timestamp to each displayed picture
-    // for both well-formed and ctts-less streams.
+    // Retain submitted presentation times only as a per-frame fallback when
+    // the Media Foundation decoder supplies no usable output timestamp. The
+    // decoder can drop damaged pictures, so unconditionally assigning these
+    // times to later output would attach stale timestamps to newer content.
     std::priority_queue<
         std::pair<LONGLONG, LONGLONG>,
         std::vector<std::pair<LONGLONG, LONGLONG>>,
@@ -766,7 +764,8 @@ struct MfH264Decoder::Impl {
         if (!immediateContext) return Fail(L"The D3D11 device has no immediate context");
         const bool preferSourceReader =
             !track.sourcePath.empty() &&
-            (sourceTrack.codec == CodecId::Mpeg2Video ||
+            (sourceTrack.codec == CodecId::H264 ||
+             sourceTrack.codec == CodecId::Mpeg2Video ||
              sourceTrack.codec == CodecId::Wmv3 ||
              sourceTrack.codec == CodecId::Msmpeg4v3 ||
              (sourceTrack.codec == CodecId::Mpeg4Part2 &&
@@ -1101,23 +1100,69 @@ struct MfH264Decoder::Impl {
             frame->color.transfer = TransferCharacteristic::Bt709;
         if (frame->color.chromaLocation == ChromaLocation::Unspecified)
             frame->color.chromaLocation = ChromaLocation::Left;
-        LONGLONG time = 0;
-        LONGLONG duration = 0;
-        if (h264 && !pendingPresentationTimes.empty()) {
-            time = pendingPresentationTimes.top().first;
-            duration = pendingPresentationTimes.top().second;
+        LONGLONG decodedTime = 0;
+        LONGLONG decodedDuration = 0;
+        const bool hasDecodedTime =
+            SUCCEEDED(decoded->GetSampleTime(&decodedTime));
+        const bool hasDecodedDuration =
+            SUCCEEDED(decoded->GetSampleDuration(&decodedDuration));
+        if (hasDecodedTime) {
+            frame->decoderPts = static_cast<double>(decodedTime) /
+                                kHundredNanosecondsPerSecond;
+        }
+
+        LONGLONG fallbackTime = 0;
+        LONGLONG fallbackDuration = 0;
+        const bool hasFallback = h264 && !pendingPresentationTimes.empty();
+        if (hasFallback) {
+            fallbackTime = pendingPresentationTimes.top().first;
+            fallbackDuration = pendingPresentationTimes.top().second;
             pendingPresentationTimes.pop();
-            frame->pts = static_cast<double>(time) /
-                         kHundredNanosecondsPerSecond;
-            frame->duration = static_cast<double>(duration) /
-                              kHundredNanosecondsPerSecond;
-        } else {
-            if (SUCCEEDED(decoded->GetSampleTime(&time))) {
-                frame->pts = static_cast<double>(time) /
-                             kHundredNanosecondsPerSecond;
+        }
+
+        // The Microsoft decoder occasionally returns S_OK with a zero sample
+        // time for the first picture at an internal discontinuity. After a
+        // seek into a multi-minute file, zero is an absent timestamp rather
+        // than a real regression to the beginning of the movie. Do not let
+        // that single sentinel permanently select the legacy synthetic clock;
+        // the following decoded picture carries the discontinuity that the
+        // Media Foundation renderer itself honors.
+        const bool decodedZeroIsMissing =
+            h264 && hasDecodedTime && decodedTime == 0 && hasFallback &&
+            std::abs(static_cast<double>(fallbackTime) /
+                     kHundredNanosecondsPerSecond) > 1.0;
+        const bool hasUsableDecodedTime =
+            hasDecodedTime && !decodedZeroIsMissing;
+        if (decodedZeroIsMissing) {
+            frame->decoderPts = std::numeric_limits<double>::quiet_NaN();
+        }
+
+        // The Windows H.264 decoder returns pictures in display order and,
+        // for a well-formed MP4 ctts timeline, its output timestamp identifies
+        // the actual picture. A damaged run can drop decoder output, and B
+        // pictures can make adjacent output timestamps briefly arrive out of
+        // order. The presentation queue sorts by PTS, so use every valid
+        // decoder timestamp independently instead of permanently switching to
+        // a stale synthetic timeline after one regression.
+        if (hasUsableDecodedTime) {
+            frame->pts = frame->decoderPts;
+            if (hasDecodedDuration) {
+                frame->duration = static_cast<double>(decodedDuration) /
+                                  kHundredNanosecondsPerSecond;
+            } else if (hasFallback) {
+                frame->duration = static_cast<double>(fallbackDuration) /
+                                  kHundredNanosecondsPerSecond;
             }
-            if (SUCCEEDED(decoded->GetSampleDuration(&duration))) {
-                frame->duration = static_cast<double>(duration) /
+        } else if (hasFallback) {
+            frame->pts = static_cast<double>(fallbackTime) /
+                         kHundredNanosecondsPerSecond;
+            frame->duration = static_cast<double>(fallbackDuration) /
+                              kHundredNanosecondsPerSecond;
+            frame->synthesizedPts = true;
+        } else {
+            if (hasUsableDecodedTime) frame->pts = frame->decoderPts;
+            if (hasDecodedDuration) {
+                frame->duration = static_cast<double>(decodedDuration) /
                                   kHundredNanosecondsPerSecond;
             }
         }
