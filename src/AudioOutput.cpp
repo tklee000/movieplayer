@@ -31,6 +31,11 @@ bool AudioOutput::Initialize(int sampleRate, int channels) {
         xaudio_.Reset();
         return false;
     }
+    XAUDIO2_VOICE_DETAILS masteringDetails = {};
+    masteringVoice_->GetVoiceDetails(&masteringDetails);
+    masteringSampleRate_ = masteringDetails.InputSampleRate != 0
+                               ? static_cast<int>(masteringDetails.InputSampleRate)
+                               : sampleRate_;
     return CreateSourceVoice();
 }
 
@@ -203,15 +208,27 @@ double AudioOutput::ClockSeconds() const {
         return 0.0;
     }
     XAUDIO2_VOICE_STATE state = {};
+    XAUDIO2_PERFORMANCE_DATA performance = {};
     {
         std::lock_guard<std::mutex> lock(voiceMutex_);
         if (!sourceVoice_) {
             return basePts_.load();
         }
         sourceVoice_->GetState(&state);
+        if (xaudio_) xaudio_->GetPerformanceData(&performance);
     }
-    return basePts_.load() + static_cast<double>(state.SamplesPlayed) /
-                                 static_cast<double>(sampleRate_);
+    const double processedSeconds =
+        static_cast<double>(state.SamplesPlayed) /
+        static_cast<double>(sampleRate_);
+    // SamplesPlayed is the source-voice processing cursor, which runs ahead
+    // of sound reaching the speakers. Use XAudio2's current output latency so
+    // video presentation follows the audible sample instead of the queued one.
+    const double latencySeconds =
+        masteringSampleRate_ > 0
+            ? static_cast<double>(performance.CurrentLatencyInSamples) /
+                  static_cast<double>(masteringSampleRate_) * speed_.load()
+            : 0.0;
+    return basePts_.load() + std::max(0.0, processedSeconds - latencySeconds);
 }
 
 bool AudioOutput::HasClock() const {

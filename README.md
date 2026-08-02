@@ -1,4 +1,4 @@
-# MoviePlayer 0.5
+# MoviePlayer 0.6
 
 MoviePlayer is a native Windows x64 MP4/MKV/AVI/MPEG-TS player written in
 C++17. Its
@@ -10,29 +10,20 @@ playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 
 ![MoviePlayer first screen](docs/movieplayer-first-screen.png)
 
-## Download and install
+## Download and run
 
 - [Open the latest GitHub Release](https://github.com/tklee000/movieplayer/releases/latest)
-- [Download the MoviePlayer 0.5 x64 MSI](https://github.com/tklee000/movieplayer/releases/download/v0.5/MoviePlayer-v0.5-win64.msi)
-- [Download the MoviePlayer 0.5 portable ZIP](https://github.com/tklee000/movieplayer/releases/download/v0.5/MoviePlayer-v0.5-win64.zip)
-- [Download SHA-256 checksums](https://github.com/tklee000/movieplayer/releases/download/v0.5/SHA256SUMS.txt)
 
-The MSI is a per-machine installer and requests administrator approval. It
-registers the supported video extensions and downloads the pinned standard
-Whisper and M2M100 model set during installation, so setup requires an internet
-connection and roughly 2 GiB of additional download/storage capacity. The
-separately licensed Japanese-to-Korean model is not installed by the MSI.
-
-For portable use, extract the ZIP and run `MoviePlayer.exe`. The required VC142
-runtime DLLs are deployed beside the application, so a system-wide Visual C++
-2019 Redistributable installation is not required. AI model weights are not
-embedded in the ZIP and can be installed later with `install_ai_models.cmd`.
-Release MSI files are currently unsigned and can display an unknown-publisher
-warning.
+GitHub Releases currently publish the portable ZIP and `SHA256SUMS.txt`; MSI
+installers are intentionally omitted. Extract the ZIP and run
+`MoviePlayer.exe`. The required VC142 runtime DLLs are deployed beside the
+application, so a system-wide Visual C++ 2019 Redistributable installation is
+not required. AI model weights are not embedded in the ZIP and can be installed
+later with `install_ai_models.cmd`.
 
 ## Highlights
 
-| Area | MoviePlayer 0.5 |
+| Area | MoviePlayer 0.6 |
 |---|---|
 | Platform | Native Windows 10/11 x64, Per-monitor V2 DPI, Unicode, and long-path awareness |
 | Playback | Play/pause/stop, frame step, seek, loop, 0.5x-2.0x speed, volume/mute, fullscreen, always-on-top, and conservative next-episode matching |
@@ -305,10 +296,16 @@ $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\c
 .\build-vs2019\Release\MovieCodecSmoke.exe "D:\path\video.mp4"
 ```
 
-Create the portable ZIP or the x64 MSI package with:
+Create the portable ZIP for GitHub Releases with:
 
 ```powershell
 .\create_release.cmd
+```
+
+An x64 MSI can still be built locally when needed, but it is not published to
+GitHub Releases:
+
+```powershell
 .\create_msi.cmd
 ```
 
@@ -317,8 +314,8 @@ local tool cache. The resulting installer downloads and verifies the standard
 Whisper and M2M100 models during installation, excludes the separately licensed
 Japanese-to-Korean model, and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`,
 and `.mts` as supported MoviePlayer file types. The MSI is a per-machine
-installer, so Windows requests administrator approval. Release MSI files are
-currently unsigned and can display an unknown-publisher warning.
+installer, so Windows requests administrator approval. Locally built MSI files
+are unsigned and can display an unknown-publisher warning.
 
 ## Source layout
 

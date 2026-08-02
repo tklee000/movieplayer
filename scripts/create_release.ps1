@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.5',
+    [string]$Version = '0.6',
     [switch]$SkipBuild,
     [string]$DeployDirectory
 )
@@ -15,8 +15,8 @@ if (-not [string]::IsNullOrWhiteSpace($DeployDirectory)) {
     }
 }
 
-if ($Version -ne '0.5') {
-    throw "This source tree declares version 0.5; refusing to package version $Version."
+if ($Version -ne '0.6') {
+    throw "This source tree declares version 0.6; refusing to package version $Version."
 }
 
 if (-not $SkipBuild) {

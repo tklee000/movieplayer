@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.5',
+    [string]$Version = '0.6',
     [switch]$SkipBuild,
     [switch]$SkipValidation
 )
@@ -39,8 +39,8 @@ function Test-VerifiedWixArchive {
     return (Get-FileHash -LiteralPath $WixZip -Algorithm SHA256).Hash -eq $WixSha256
 }
 
-if ($Version -ne '0.5') {
-    throw "This source tree declares version 0.5; refusing to package version $Version."
+if ($Version -ne '0.6') {
+    throw "This source tree declares version 0.6; refusing to package version $Version."
 }
 
 if (-not $SkipBuild) {
@@ -132,7 +132,7 @@ if ($LASTEXITCODE -ne 0) {
 & $Candle -nologo -arch x64 -ext WixUtilExtension `
     "-dDeployDir=$PackageRoot" `
     "-dLicenseRtf=$LicenseRtf" `
-    '-dProductVersion=0.5.0' `
+    '-dProductVersion=0.6.0' `
     -out ($ObjectRoot + '\') `
     $InstallerSource $HarvestedSource
 if ($LASTEXITCODE -ne 0) {

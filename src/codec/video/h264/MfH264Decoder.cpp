@@ -191,6 +191,7 @@ struct MfH264Decoder::Impl {
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> immediateContext;
+    ComPtr<IMFDXGIDeviceManager> dxgiDeviceManager;
     ComPtr<IMFTransform> transform;
     ComPtr<IMFSourceReader> sourceReader;
     ComPtr<IMFMediaType> outputType;
@@ -217,6 +218,7 @@ struct MfH264Decoder::Impl {
     LONG outputStride = 0;
     DWORD outputStreamFlags = 0;
     DWORD outputBufferSize = 0;
+    UINT dxgiResetToken = 0;
     GUID outputSubtype = MFVideoFormat_NV12;
     bool parameterSetsPending = true;
     bool h264 = true;
@@ -226,6 +228,7 @@ struct MfH264Decoder::Impl {
     bool mediaFoundationStarted = false;
     bool comInitialized = false;
     bool sourceReaderNeedsSeek = true;
+    bool d3dManagerAttached = false;
     DWORD sourceReaderStream =
         static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 
@@ -237,11 +240,15 @@ struct MfH264Decoder::Impl {
     }
 
     void Shutdown() {
+        if (transform && d3dManagerAttached) {
+            transform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, 0);
+        }
         surfaces.clear();
         pendingPresentationTimes = {};
         outputType.Reset();
         sourceReader.Reset();
         transform.Reset();
+        dxgiDeviceManager.Reset();
         immediateContext.Reset();
         device.Reset();
         if (mediaFoundationStarted) {
@@ -258,6 +265,7 @@ struct MfH264Decoder::Impl {
         drainStarted = false;
         drainComplete = false;
         sourceReaderNeedsSeek = true;
+        d3dManagerAttached = false;
     }
 
     bool ParseConfiguration(const std::vector<std::uint8_t>& configuration) {
@@ -474,7 +482,43 @@ struct MfH264Decoder::Impl {
         return true;
     }
 
+    void AttachD3D11DeviceManager() {
+        d3dManagerAttached = false;
+        if (!h264 || !transform || !device) return;
+
+        ComPtr<IMFAttributes> attributes;
+        UINT32 d3d11Aware = FALSE;
+        if (FAILED(transform->GetAttributes(&attributes)) || !attributes ||
+            FAILED(attributes->GetUINT32(MF_SA_D3D11_AWARE, &d3d11Aware)) ||
+            !d3d11Aware) {
+            return;
+        }
+        if (!dxgiDeviceManager) {
+            HRESULT hr = MFCreateDXGIDeviceManager(
+                &dxgiResetToken, &dxgiDeviceManager);
+            if (FAILED(hr) || !dxgiDeviceManager) {
+                dxgiDeviceManager.Reset();
+                return;
+            }
+            hr = dxgiDeviceManager->ResetDevice(device.Get(), dxgiResetToken);
+            if (FAILED(hr)) {
+                dxgiDeviceManager.Reset();
+                return;
+            }
+        }
+
+        const HRESULT hr = transform->ProcessMessage(
+            MFT_MESSAGE_SET_D3D_MANAGER,
+            reinterpret_cast<ULONG_PTR>(dxgiDeviceManager.Get()));
+        d3dManagerAttached = SUCCEEDED(hr);
+    }
+
     bool CreateTransform() {
+        if (transform && d3dManagerAttached) {
+            transform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, 0);
+        }
+        transform.Reset();
+        d3dManagerAttached = false;
         HRESULT hr = E_FAIL;
         if (track.codec == CodecId::Wmv3) {
             hr = CoCreateInstance(CLSID_CWMVDecMediaObject, nullptr,
@@ -519,6 +563,8 @@ struct MfH264Decoder::Impl {
         if (FAILED(hr)) {
             return Fail(HresultText(L"Create Windows video decoder", hr));
         }
+
+        AttachD3D11DeviceManager();
 
         ComPtr<ICodecAPI> codecApi;
         if (SUCCEEDED(transform.As(&codecApi))) {
@@ -742,7 +788,10 @@ struct MfH264Decoder::Impl {
                   << std::wstring(track.sampleEntry.begin(), track.sampleEntry.end())
                   << L", NV12)";
         } else {
-            label << L"Windows Media Foundation H.264 (NV12, DXVA when available)";
+            label << L"Windows Media Foundation H.264 (NV12, "
+                  << (d3dManagerAttached ? L"D3D11/DXVA hardware"
+                                         : L"software fallback")
+                  << L")";
             if (track.codecPrivate.size() >= 4) {
                 label << L" - profile "
                       << static_cast<unsigned>(track.codecPrivate[1])
@@ -960,23 +1009,78 @@ struct MfH264Decoder::Impl {
         return true;
     }
 
+    bool GetDxgiSurface(IMFSample* sample,
+                        ComPtr<ID3D11Texture2D>& texture,
+                        UINT& subresource, bool& found) {
+        found = false;
+        ComPtr<IMFMediaBuffer> buffer;
+        HRESULT hr = sample->GetBufferByIndex(0, &buffer);
+        if (FAILED(hr) || !buffer) return true;
+
+        ComPtr<IMFDXGIBuffer> dxgiBuffer;
+        if (FAILED(buffer.As(&dxgiBuffer)) || !dxgiBuffer) return true;
+
+        hr = dxgiBuffer->GetResource(IID_PPV_ARGS(&texture));
+        if (FAILED(hr) || !texture) {
+            return Fail(HresultText(L"Get H.264 DXGI output texture", hr));
+        }
+        subresource = 0;
+        hr = dxgiBuffer->GetSubresourceIndex(&subresource);
+        if (FAILED(hr)) {
+            return Fail(HresultText(L"Get H.264 DXGI subresource", hr));
+        }
+
+        D3D11_TEXTURE2D_DESC textureDescription = {};
+        texture->GetDesc(&textureDescription);
+        if (textureDescription.Format != DXGI_FORMAT_NV12 ||
+            textureDescription.MipLevels == 0 ||
+            textureDescription.Width < outputWidth ||
+            textureDescription.Height < outputHeight ||
+            subresource >= textureDescription.MipLevels *
+                               textureDescription.ArraySize) {
+            return Fail(L"The H.264 hardware decoder returned an invalid "
+                        L"NV12 surface");
+        }
+
+        found = true;
+        return true;
+    }
+
     bool MakeFrame(IMFSample* decoded,
-                   std::vector<std::shared_ptr<VideoFrame>>& output) {
-        std::vector<std::uint8_t> nv12;
-        if (!CopyNv12Buffer(decoded, nv12)) return false;
+                    std::vector<std::shared_ptr<VideoFrame>>& output) {
+        auto frame = std::make_shared<VideoFrame>();
+        bool dxgiSurface = false;
+        ComPtr<ID3D11Texture2D> decodedTexture;
+        UINT decodedSubresource = 0;
+        if (!GetDxgiSurface(decoded, decodedTexture, decodedSubresource,
+                            dxgiSurface)) {
+            return false;
+        }
+
         const int surfaceIndex = AcquireSurface();
         if (surfaceIndex < 0) {
             if (error.empty()) {
                 error = L"The H.264 texture pool is exhausted (" +
-                        std::to_wstring(surfaces.size()) + L" surfaces in use)";
+                        std::to_wstring(surfaces.size()) +
+                        L" surfaces in use)";
             }
             return false;
         }
-        immediateContext->UpdateSubresource(surfaces[surfaceIndex].texture.Get(), 0,
-                                            nullptr, nv12.data(), outputWidth,
-                                            static_cast<UINT>(nv12.size()));
-
-        auto frame = std::make_shared<VideoFrame>();
+        if (dxgiSurface) {
+            // The Microsoft decoder's DXGI samples come from a small circular
+            // pool and must be returned before the next ProcessInput call.
+            // Keep decoding and transfer entirely on the GPU by copying into
+            // the playback queue's own NV12 texture.
+            immediateContext->CopySubresourceRegion(
+                surfaces[surfaceIndex].texture.Get(), 0, 0, 0, 0,
+                decodedTexture.Get(), decodedSubresource, nullptr);
+        } else {
+            std::vector<std::uint8_t> nv12;
+            if (!CopyNv12Buffer(decoded, nv12)) return false;
+            immediateContext->UpdateSubresource(
+                surfaces[surfaceIndex].texture.Get(), 0, nullptr, nv12.data(),
+                outputWidth, static_cast<UINT>(nv12.size()));
+        }
         frame->texture = surfaces[surfaceIndex].texture;
         frame->arraySlice = 0;
         frame->format = DXGI_FORMAT_NV12;

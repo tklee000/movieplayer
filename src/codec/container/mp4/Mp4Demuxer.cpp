@@ -216,6 +216,7 @@ struct Mp4Demuxer::Impl {
         std::vector<Sample> samples;
         std::size_t cursor = 0;
         bool enabled = true;
+        std::int64_t timelineOffset = 0;
     };
 
     RandomAccessFile file;
@@ -360,6 +361,116 @@ struct Mp4Demuxer::Impl {
             info.type = TrackType::Video;
         } else if (handler == "soun") {
             info.type = TrackType::Audio;
+        }
+        return true;
+    }
+
+    bool ParseEditList(const std::vector<std::uint8_t>& data, const Box& trak,
+                       Track& track) {
+        Box edts, elst;
+        if (!FindChild(data, trak, "edts", edts) ||
+            !FindChild(data, edts, "elst", elst)) {
+            return true;
+        }
+
+        std::uint8_t version = 0;
+        std::uint32_t flags = 0;
+        ByteReader reader;
+        if (!ReadFullBox(data, elst, version, flags, reader)) {
+            return Fail(L"Invalid elst box");
+        }
+        (void)flags;
+        std::uint32_t entryCount = 0;
+        if (!reader.ReadU32(entryCount) || entryCount == 0 ||
+            entryCount > 1024U) {
+            return Fail(L"Invalid MP4 edit-list entry count");
+        }
+
+        std::uint64_t moviePosition = 0;
+        std::uint64_t totalDuration = 0;
+        bool foundMediaEdit = false;
+        bool simpleTimeline = true;
+        std::int64_t timelineOffset = 0;
+        for (std::uint32_t index = 0; index < entryCount; ++index) {
+            std::uint64_t segmentDuration = 0;
+            std::int64_t mediaTime = 0;
+            if (version == 1) {
+                if (!reader.ReadU64(segmentDuration) ||
+                    !reader.ReadI64(mediaTime)) {
+                    return Fail(L"Truncated version 1 elst box");
+                }
+            } else if (version == 0) {
+                std::uint32_t duration32 = 0;
+                std::int32_t mediaTime32 = 0;
+                if (!reader.ReadU32(duration32) ||
+                    !reader.ReadI32(mediaTime32)) {
+                    return Fail(L"Truncated version 0 elst box");
+                }
+                segmentDuration = duration32;
+                mediaTime = mediaTime32;
+            } else {
+                return Fail(L"Unsupported elst version");
+            }
+
+            std::uint16_t rateInteger = 0;
+            std::uint16_t rateFraction = 0;
+            if (!reader.ReadU16(rateInteger) ||
+                !reader.ReadU16(rateFraction)) {
+                return Fail(L"Truncated elst media rate");
+            }
+            if (rateInteger != 1U || rateFraction != 0U) {
+                simpleTimeline = false;
+            }
+            if (totalDuration >
+                (std::numeric_limits<std::uint64_t>::max)() -
+                    segmentDuration) {
+                return Fail(L"MP4 edit-list duration overflows 64 bits");
+            }
+            totalDuration += segmentDuration;
+
+            if (mediaTime == -1 && !foundMediaEdit) {
+                moviePosition += segmentDuration;
+                continue;
+            }
+            if (mediaTime < 0 || foundMediaEdit) {
+                simpleTimeline = false;
+                continue;
+            }
+
+            const long double mediaStart =
+                static_cast<long double>(moviePosition) *
+                track.info.timeScale / movieTimeScale;
+            if (mediaStart <
+                    static_cast<long double>(
+                        (std::numeric_limits<std::int64_t>::min)()) ||
+                mediaStart >
+                    static_cast<long double>(
+                        (std::numeric_limits<std::int64_t>::max)())) {
+                simpleTimeline = false;
+                continue;
+            }
+            timelineOffset = static_cast<std::int64_t>(
+                                 std::llround(mediaStart)) -
+                             mediaTime;
+            foundMediaEdit = true;
+            moviePosition += segmentDuration;
+        }
+
+        // A single media edit, optionally preceded by an empty edit, maps to a
+        // constant timestamp shift. More complex edit lists require splicing
+        // or repeating samples and are left on their original media timeline.
+        if (!simpleTimeline || !foundMediaEdit) return true;
+        track.timelineOffset = timelineOffset;
+
+        const long double editedDuration =
+            static_cast<long double>(totalDuration) * track.info.timeScale /
+            movieTimeScale;
+        if (editedDuration >= 0.0L &&
+            editedDuration <=
+                static_cast<long double>(
+                    (std::numeric_limits<std::uint64_t>::max)())) {
+            track.info.durationTicks = static_cast<std::uint64_t>(
+                std::llround(editedDuration));
         }
         return true;
     }
@@ -721,8 +832,26 @@ struct Mp4Demuxer::Impl {
         }
         std::int64_t dts = 0;
         for (std::size_t i = 0; i < track.samples.size(); ++i) {
-            track.samples[i].dts = dts;
-            track.samples[i].pts = dts + compositionOffsets[i];
+            const std::int64_t pts = dts + compositionOffsets[i];
+            const auto addTimelineOffset =
+                [&](std::int64_t value, std::int64_t& adjusted) {
+                    if ((track.timelineOffset > 0 &&
+                         value >
+                             (std::numeric_limits<std::int64_t>::max)() -
+                                 track.timelineOffset) ||
+                        (track.timelineOffset < 0 &&
+                         value <
+                             (std::numeric_limits<std::int64_t>::min)() -
+                                 track.timelineOffset)) {
+                        return false;
+                    }
+                    adjusted = value + track.timelineOffset;
+                    return true;
+                };
+            if (!addTimelineOffset(dts, track.samples[i].dts) ||
+                !addTimelineOffset(pts, track.samples[i].pts)) {
+                return Fail(L"MP4 edit-list timestamps overflow 64 bits");
+            }
             if (durations[i] > static_cast<std::uint64_t>(
                                    std::numeric_limits<std::int64_t>::max() - dts)) {
                 return Fail(L"MP4 track timestamps overflow 64 bits");
@@ -796,6 +925,9 @@ struct Mp4Demuxer::Impl {
         }
         if (track.info.type == TrackType::Unknown) {
             return true;
+        }
+        if (!ParseEditList(data, trak, track)) {
+            return false;
         }
         if (!ParseSampleTable(data, stbl, track)) {
             return false;

@@ -68,6 +68,7 @@ private:
     VoiceCallback callback_;
 
     int sampleRate_ = 48000;
+    int masteringSampleRate_ = 48000;
     int channels_ = 2;
     int blockAlign_ = 4;
 
