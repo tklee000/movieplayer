@@ -471,9 +471,9 @@ struct MfH264Decoder::Impl {
             return Fail(HresultText(L"GetOutputStreamInfo(video)", hr));
         }
         outputType = selected;
-        outputWidth = width;
-        outputHeight = height;
-        outputStride = static_cast<LONG>(stride);
+        outputWidth = (width + 15U) & ~15U;
+        outputHeight = (height + 15U) & ~15U;
+        outputStride = static_cast<LONG>((std::max<UINT32>)(stride, outputWidth));
         outputStreamFlags = streamInfo.dwFlags;
         outputBufferSize = streamInfo.cbSize;
         surfaces.clear();
@@ -712,9 +712,9 @@ struct MfH264Decoder::Impl {
             width = static_cast<UINT32>(track.width);
             height = static_cast<UINT32>(track.height);
         }
-        outputWidth = width;
-        outputHeight = height;
-        outputStride = static_cast<LONG>(width);
+        outputWidth = (width + 15U) & ~15U;
+        outputHeight = (height + 15U) & ~15U;
+        outputStride = static_cast<LONG>(outputWidth);
         outputSubtype = MFVideoFormat_NV12;
         outputType = current;
         surfaces.clear();
@@ -1033,12 +1033,19 @@ struct MfH264Decoder::Impl {
         texture->GetDesc(&textureDescription);
         if (textureDescription.Format != DXGI_FORMAT_NV12 ||
             textureDescription.MipLevels == 0 ||
-            textureDescription.Width < outputWidth ||
-            textureDescription.Height < outputHeight ||
+            textureDescription.Width < static_cast<UINT32>(track.width) ||
+            textureDescription.Height < static_cast<UINT32>(track.height) ||
             subresource >= textureDescription.MipLevels *
                                textureDescription.ArraySize) {
             return Fail(L"The H.264 hardware decoder returned an invalid "
                         L"NV12 surface");
+        }
+
+        if (textureDescription.Width > outputWidth ||
+            textureDescription.Height > outputHeight) {
+            outputWidth = (std::max)(outputWidth, textureDescription.Width);
+            outputHeight = (std::max)(outputHeight, textureDescription.Height);
+            surfaces.clear();
         }
 
         found = true;

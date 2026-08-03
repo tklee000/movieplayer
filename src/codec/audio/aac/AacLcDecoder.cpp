@@ -985,8 +985,10 @@ struct AacLcDecoder::Impl {
             constexpr float centerGain = 0.70710678118F;
             constexpr float surroundGain = 0.70710678118F;
             constexpr float lfeGain = 0.5F;
-            // Apply headroom for the 5.1-to-stereo sum.
-            constexpr float normalization = 0.5F / 32768.0F;
+            // Use 0.8F normalization with dynamic look-ahead limiter so 5.1 tracks
+            // are not attenuated by 6 dB compared to stereo tracks.
+            constexpr float normalization = 0.8F / 32768.0F;
+            float peak = 0.0F;
             for (unsigned i = 0; i < kLongLength; ++i) {
                 const float left = normalization *
                     (frontLeft->pcm[i] + centerGain * center->pcm[i] +
@@ -994,8 +996,26 @@ struct AacLcDecoder::Impl {
                 const float right = normalization *
                     (frontRight->pcm[i] + centerGain * center->pcm[i] +
                      surroundGain * surroundRight->pcm[i] + lfeGain * lfe->pcm[i]);
-                frame.samples[2U * i] = std::clamp(left, -1.0F, 1.0F);
-                frame.samples[2U * i + 1U] = std::clamp(right, -1.0F, 1.0F);
+                frame.samples[2U * i] = left;
+                frame.samples[2U * i + 1U] = right;
+                peak = std::max(peak, std::max(std::abs(left), std::abs(right)));
+            }
+
+            constexpr float limiterCeiling = 0.98F;
+            const float targetGain = peak > limiterCeiling
+                                         ? limiterCeiling / peak
+                                         : 1.0F;
+            if (targetGain < downmixLimiterGain) {
+                downmixLimiterGain = targetGain;
+            } else {
+                const float release = 1.0F - std::exp(
+                    -static_cast<float>(kLongLength) /
+                    static_cast<float>(sampleRate));
+                downmixLimiterGain +=
+                    (targetGain - downmixLimiterGain) * release;
+            }
+            for (float& value : frame.samples) {
+                value = std::clamp(value * downmixLimiterGain, -1.0F, 1.0F);
             }
         } else {
             if (!center || !surroundLeft || !surroundRight || !backLeft ||
