@@ -860,6 +860,29 @@ int wmain(int argc, wchar_t** argv) {
             AudioEnergyEnvelope(custom, audioTrack->sampleRate);
         const auto referenceEnvelope =
             AudioEnergyEnvelope(reference, audioTrack->sampleRate);
+        double customEnergy = 0.0;
+        double referenceEnergy = 0.0;
+        double crossEnergy = 0.0;
+        double customPeak = 0.0;
+        double referencePeak = 0.0;
+        const std::size_t comparedSamples =
+            std::min(custom.size(), reference.size());
+        for (std::size_t i = 0; i < comparedSamples; ++i) {
+            const double customValue = custom[i];
+            const double referenceValue = reference[i];
+            customEnergy += customValue * customValue;
+            referenceEnergy += referenceValue * referenceValue;
+            crossEnergy += customValue * referenceValue;
+            customPeak = std::max(customPeak, std::abs(customValue));
+            referencePeak = std::max(referencePeak, std::abs(referenceValue));
+        }
+        const double levelRatio = referenceEnergy > 0.0
+                                      ? std::sqrt(customEnergy / referenceEnergy)
+                                      : 0.0;
+        const double sampleCorrelation =
+            customEnergy > 0.0 && referenceEnergy > 0.0
+                ? crossEnergy / std::sqrt(customEnergy * referenceEnergy)
+                : 0.0;
         constexpr std::size_t kAnalysisBins = 1200U;
         constexpr std::size_t kStepBins = 1000U;
         constexpr int kMaximumLagBins = 200;
@@ -898,9 +921,17 @@ int wmain(int argc, wchar_t** argv) {
                    << L" min-delay-ms=" << minimumDelay
                    << L" max-delay-ms=" << maximumDelay
                    << L" delay-span-ms=" << maximumDelay - minimumDelay
-                   << L" min-correlation=" << minimumCorrelation << L"\n";
+                   << L" min-correlation=" << minimumCorrelation
+                   << L" level-ratio=" << levelRatio
+                   << L" sample-correlation=" << sampleCorrelation
+                   << L" custom-peak=" << customPeak
+                   << L" reference-peak=" << referencePeak << L"\n";
+        const bool levelMatchesReference =
+            audioTrack->channels != 2 ||
+            (levelRatio >= 0.85 && levelRatio <= 1.15);
         return windows != 0 && minimumCorrelation > 0.50 &&
-                       maximumDelay - minimumDelay <= 100
+                       maximumDelay - minimumDelay <= 100 &&
+                       levelMatchesReference
                    ? 0
                    : 37;
     }

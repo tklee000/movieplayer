@@ -794,7 +794,14 @@ struct MkvDemuxer::Impl {
         if (selectedAudio) selectedAudio->enabled = true;
         if (selectedSubtitle) selectedSubtitle->enabled = true;
         publicTracks.clear();
-        for (const Track& track : tracks) publicTracks.push_back(track.info);
+        for (Track& track : tracks) {
+            // Preserve the backing file so H.264 can use Media Foundation's
+            // file-aware decode pipeline. Without this, Matroska alone falls
+            // back to direct MFT submission, which can corrupt isolated H.264
+            // dependency chains even though the source frames are intact.
+            track.info.sourcePath = path;
+            publicTracks.push_back(track.info);
+        }
         if (!ParseCues()) return false;
         readPosition = firstClusterOffset;
         error.clear();

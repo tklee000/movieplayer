@@ -116,6 +116,13 @@ unsigned BandCount(const IcsInfo& info, int sampleRate) {
                : static_cast<unsigned>(kLongBands48k.size() - 1);
 }
 
+unsigned TnsMaximumBandCount(const IcsInfo& info, int sampleRate) {
+    if (info.IsShort()) return 14;
+    if (sampleRate == 24000) return 46;
+    if (sampleRate == 44100) return 42;
+    return 40;
+}
+
 bool ReadBits(BitReader& bits, unsigned count, unsigned& value) {
     std::uint32_t result = 0;
     if (!bits.ReadBits(count, result)) return false;
@@ -209,7 +216,9 @@ std::vector<double> DctIv(const double* input, unsigned count) {
 std::vector<double> Imdct(const double* input, unsigned count) {
     const auto transformed = DctIv(input, count);
     std::vector<double> output(static_cast<std::size_t>(count) * 2U);
-    const double scale = 2.0 / static_cast<double>(count);
+    // DctIv already constructs both halves of the unnormalized inverse
+    // transform. A second factor of two here doubles every decoded sample.
+    const double scale = 1.0 / static_cast<double>(count);
     const unsigned half = count / 2U;
     for (unsigned i = 0; i < half; ++i) {
         output[i] = transformed[half + i] * scale;
@@ -506,6 +515,10 @@ struct AacLcDecoder::Impl {
         const bool shortBlock = channel.info.IsShort();
         const unsigned windows = shortBlock ? 8U : 1U;
         const unsigned* offsets = BandOffsets(channel.info, sampleRate);
+        const unsigned totalBands = BandCount(channel.info, sampleRate);
+        const unsigned maximumBand = std::min(
+            channel.info.maxSfb,
+            TnsMaximumBandCount(channel.info, sampleRate));
         for (unsigned window = 0; window < windows; ++window) {
             unsigned filterCount = 0;
             if (!ReadBits(bits, shortBlock ? 1U : 2U, filterCount))
@@ -513,17 +526,20 @@ struct AacLcDecoder::Impl {
             unsigned coefficientResolution = 0;
             if (filterCount && !ReadBits(bits, 1, coefficientResolution))
                 return Fail(L"Truncated AAC TNS coefficient resolution");
-            unsigned topBand = channel.info.maxSfb;
+            // TNS lengths are relative to num_swb. The resulting range is
+            // clipped afterwards to max_sfb and the sample-rate TNS limit.
+            unsigned topBand = totalBands;
             for (unsigned filter = 0; filter < filterCount; ++filter) {
                 unsigned length = 0, order = 0;
                 if (!ReadBits(bits, shortBlock ? 4U : 6U, length) ||
-                    !ReadBits(bits, shortBlock ? 3U : 5U, order) || order > 20)
+                    !ReadBits(bits, shortBlock ? 3U : 5U, order) ||
+                    order > (shortBlock ? 7U : 12U))
                     return Fail(L"Invalid AAC TNS filter");
                 const unsigned bottomBand = length > topBand ? 0 : topBand - length;
                 TnsFilter decoded;
                 decoded.window = window;
-                decoded.startLine = offsets[bottomBand];
-                decoded.endLine = offsets[topBand];
+                decoded.startLine = offsets[std::min(bottomBand, maximumBand)];
+                decoded.endLine = offsets[std::min(topBand, maximumBand)];
                 if (order) {
                     bool direction = false, compress = false;
                     if (!bits.ReadBit(direction) || !bits.ReadBit(compress))
