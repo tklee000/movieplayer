@@ -1,5 +1,6 @@
 #include "D3DRenderer.h"
 #include "RtxVideoVsr.h"
+#include "NvidiaFrameInterpolator.h"
 
 #include <d3d10.h>
 #include <d3d11_1.h>
@@ -261,6 +262,19 @@ struct D3DRenderer::Impl {
     UINT hdrPqHeight = 0;
     RtxVideoVsr rtxVideoVsr;
     bool rtxVideoUpscalingEnabled = false;
+    NvidiaFrameInterpolator frameInterpolator;
+    bool rtxFrameInterpolationEnabled = false;
+    double previousInterpolationPts =
+        std::numeric_limits<double>::quiet_NaN();
+    double interpolationTimestampOffset =
+        std::numeric_limits<double>::quiet_NaN();
+    ComPtr<ID3D11Texture2D> pendingInterpolationTexture;
+    ComPtr<ID3D11ShaderResourceView> pendingInterpolationView;
+    RECT pendingInterpolationDestination = {};
+    int pendingInterpolationWidth = 0;
+    int pendingInterpolationHeight = 0;
+    double pendingInterpolationPts =
+        std::numeric_limits<double>::quiet_NaN();
     ComPtr<ID3D11Texture2D> vsrInputTexture;
     ComPtr<ID3D11RenderTargetView> vsrInputRenderTarget;
     ComPtr<ID3D11ShaderResourceView> vsrInputView;
@@ -284,6 +298,7 @@ struct D3DRenderer::Impl {
 
     ~Impl()
     {
+        frameInterpolator.Shutdown();
         rtxVideoVsr.Shutdown();
         if (context) {
             context->ClearState();
@@ -318,8 +333,32 @@ struct D3DRenderer::Impl {
         videoFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
     }
 
+    void DiscardPendingInterpolationFrame()
+    {
+        pendingInterpolationView.Reset();
+        pendingInterpolationTexture.Reset();
+        pendingInterpolationDestination = {};
+        pendingInterpolationWidth = 0;
+        pendingInterpolationHeight = 0;
+        pendingInterpolationPts = std::numeric_limits<double>::quiet_NaN();
+    }
+
+    void ResetFrameInterpolationState(bool resetSdkHistory)
+    {
+        DiscardPendingInterpolationFrame();
+        previousInterpolationPts = std::numeric_limits<double>::quiet_NaN();
+        interpolationTimestampOffset =
+            std::numeric_limits<double>::quiet_NaN();
+        if (resetSdkHistory) {
+            frameInterpolator.ResetHistory();
+        }
+    }
+
     void ResetD3D()
     {
+        rtxFrameInterpolationEnabled = false;
+        ResetFrameInterpolationState(false);
+        frameInterpolator.Shutdown();
         rtxVideoUpscalingEnabled = false;
         rtxVideoVsr.Shutdown();
         if (context) {
@@ -1016,6 +1055,9 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
         // VSR is optional. Initialization failure is retained as feature
         // status but must not prevent normal video playback.
         rtxVideoVsr.Initialize(device.Get());
+        // FRUC is separately licensed and optional. Missing SDK/runtime or
+        // unsupported hardware must likewise leave ordinary playback intact.
+        frameInterpolator.Initialize(device.Get());
         lastError.clear();
         return true;
     }
@@ -1029,6 +1071,12 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
         clientWidth = width;
         clientHeight = height;
         InvalidateVideoProcessor();
+        // The FRUC input surfaces and cached source frame are sized to the
+        // video, not the swap chain. Recreating that SDK session for every
+        // WM_SIZE is both unnecessary and unsafe while VSR may still consume
+        // its output. Only discard the presentation queued for the old client
+        // rectangle; the next source frame continues the same FRUC timeline.
+        DiscardPendingInterpolationFrame();
         vsrOutputView.Reset();
         vsrOutputTexture.Reset();
         vsrOutputWidth = vsrOutputHeight = 0;
@@ -1079,11 +1127,32 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
             return Fail(L"The video output surface is unavailable");
         }
 
-        if (videoEnumerator && videoProcessor && videoOutput &&
-            SameComObject(videoOutputTexture.Get(), outputTexture) &&
+        if (videoEnumerator && videoProcessor &&
             videoInputWidth == inputWidth && videoInputHeight == inputHeight &&
             videoOutputWidth == outputWidth && videoOutputHeight == outputHeight &&
             videoFrameFormat == frameFormat) {
+            if (videoOutput &&
+                SameComObject(videoOutputTexture.Get(), outputTexture)) {
+                return true;
+            }
+
+            // FRUC alternates two registered input textures. Their dimensions
+            // and video-processor configuration are identical, so only the
+            // output view needs to change from frame to frame.
+            videoOutput.Reset();
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputDesc = {};
+            outputDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            outputDesc.Texture2D.MipSlice = 0;
+            const HRESULT outputHr =
+                videoDevice->CreateVideoProcessorOutputView(
+                    outputTexture, videoEnumerator.Get(), &outputDesc,
+                    &videoOutput);
+            if (FAILED(outputHr)) {
+                videoOutputTexture.Reset();
+                return Fail(L"ID3D11VideoDevice::CreateVideoProcessorOutputView",
+                            outputHr);
+            }
+            videoOutputTexture = outputTexture;
             return true;
         }
 
@@ -1332,7 +1401,142 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
         return DrawTexture(vsrOutputView.Get(), destination) && Present();
     }
 
-    bool RenderHardware(const movieplayer::codec::VideoFrame& frame)
+    bool RenderRgbTexture(ID3D11Texture2D* texture,
+                          ID3D11ShaderResourceView* view,
+                          int sourceWidth, int sourceHeight,
+                          const RECT& destination)
+    {
+        if (!texture || !view) {
+            return Fail(L"The RGB presentation texture is unavailable");
+        }
+        if (ShouldUseVsr(sourceWidth, sourceHeight, destination)) {
+            if (RenderVsrTexture(texture, sourceWidth, sourceHeight,
+                                 destination)) {
+                return true;
+            }
+            // FRUC remains useful if VSR encounters a transient NGX failure.
+            // Disable only VSR and present the source-sized RGB frame.
+            rtxVideoUpscalingEnabled = false;
+            InvalidateVideoProcessor();
+        }
+        lastVideoRect = destination;
+        return DrawTexture(view, destination) && Present();
+    }
+
+    bool ShouldUseFrameInterpolation(
+        const movieplayer::codec::VideoFrame& frame) const
+    {
+        if (!rtxFrameInterpolationEnabled ||
+            !frameInterpolator.IsAvailable() || frame.interlaced ||
+            !std::isfinite(frame.duration) || frame.duration <= 0.0) {
+            return false;
+        }
+        const double frameRate = 1.0 / frame.duration;
+        return frameRate >= 23.0 && frameRate <= 31.0;
+    }
+
+    bool ProcessFrameInterpolation(
+        const movieplayer::codec::VideoFrame& frame,
+        const RECT& destination, double playbackPosition)
+    {
+        if (!std::isfinite(interpolationTimestampOffset)) {
+            // The SDK sample starts at input timestamp 1 and requests output
+            // timestamp 0.5 on the first call. Offset media PTS the same way
+            // so streams beginning at zero never submit a negative timestamp.
+            interpolationTimestampOffset = frame.duration - frame.pts;
+        }
+        const double midpoint =
+            std::isfinite(previousInterpolationPts)
+                ? (previousInterpolationPts + frame.pts) * 0.5
+                : frame.pts - frame.duration * 0.5;
+        const double sdkInputTimestamp =
+            frame.pts + interpolationTimestampOffset;
+        const double sdkOutputTimestamp =
+            midpoint + interpolationTimestampOffset;
+        bool hasHistory = false;
+        if (!frameInterpolator.Process(sdkInputTimestamp, sdkOutputTimestamp,
+                                       hasHistory)) {
+            ComPtr<ID3D11Texture2D> current =
+                frameInterpolator.CurrentTexture();
+            ComPtr<ID3D11ShaderResourceView> currentView =
+                frameInterpolator.CurrentView();
+            rtxFrameInterpolationEnabled = false;
+            ResetFrameInterpolationState(false);
+            frameInterpolator.ResetHistory();
+            if (current && currentView) {
+                return RenderRgbTexture(current.Get(), currentView.Get(),
+                                        frame.width, frame.height, destination);
+            }
+            return false;
+        }
+
+        previousInterpolationPts = frame.pts;
+        ComPtr<ID3D11Texture2D> current =
+            frameInterpolator.CurrentTexture();
+        ComPtr<ID3D11ShaderResourceView> currentView =
+            frameInterpolator.CurrentView();
+
+        // A timed call receives this source frame at the preceding midpoint.
+        // If the UI thread was delayed until the source PTS, skip the already
+        // late midpoint instead of issuing two Presents back-to-back.
+        const bool midpointStillUseful =
+            hasHistory && std::isfinite(playbackPosition) &&
+            playbackPosition + 0.001 < frame.pts;
+        if (!midpointStillUseful) {
+            DiscardPendingInterpolationFrame();
+            return RenderRgbTexture(current.Get(), currentView.Get(),
+                                    frame.width, frame.height, destination);
+        }
+
+        pendingInterpolationTexture = current;
+        pendingInterpolationView = currentView;
+        pendingInterpolationDestination = destination;
+        pendingInterpolationWidth = frame.width;
+        pendingInterpolationHeight = frame.height;
+        pendingInterpolationPts = frame.pts;
+        return RenderRgbTexture(frameInterpolator.InterpolatedTexture(),
+                                frameInterpolator.InterpolatedView(),
+                                frame.width, frame.height, destination);
+    }
+
+    bool PresentPendingInterpolatedFrame(double playbackPosition)
+    {
+        if (!pendingInterpolationTexture || !pendingInterpolationView ||
+            !std::isfinite(pendingInterpolationPts)) {
+            return true;
+        }
+        if (!std::isfinite(playbackPosition)) {
+            return true;
+        }
+        if (playbackPosition + 0.075 < pendingInterpolationPts) {
+            // The playback clock moved backwards (seek, loop, or new file).
+            ResetFrameInterpolationState(true);
+            return true;
+        }
+        if (playbackPosition + 0.0005 < pendingInterpolationPts) {
+            return true;
+        }
+
+        ComPtr<ID3D11Texture2D> texture = pendingInterpolationTexture;
+        ComPtr<ID3D11ShaderResourceView> view = pendingInterpolationView;
+        const RECT destination = pendingInterpolationDestination;
+        const int width = pendingInterpolationWidth;
+        const int height = pendingInterpolationHeight;
+        const double lateness = playbackPosition - pendingInterpolationPts;
+        DiscardPendingInterpolationFrame();
+
+        // After a seek or long UI stall this source is stale. The next decoded
+        // frame will restart FRUC history without flashing an old picture.
+        if (lateness > 0.075) {
+            ResetFrameInterpolationState(true);
+            return true;
+        }
+        return RenderRgbTexture(texture.Get(), view.Get(), width, height,
+                                destination);
+    }
+
+    bool RenderHardware(const movieplayer::codec::VideoFrame& frame,
+                        double playbackPosition)
     {
         if (!frame.texture || frame.width <= 0 || frame.height <= 0) {
             return Fail(L"The decoded frame does not contain a valid D3D11 texture");
@@ -1367,9 +1571,50 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
                                                    frame.sampleAspectRatio,
                                                    clientWidth, clientHeight);
         lastVideoRect = destinationRect;
+        bool useFrameInterpolation = ShouldUseFrameInterpolation(frame);
+        if (useFrameInterpolation &&
+            std::isfinite(previousInterpolationPts)) {
+            const double delta = frame.pts - previousInterpolationPts;
+            const double duplicateTolerance =
+                (std::max)(0.0005, frame.duration * 0.05);
+            if (std::abs(delta) <= duplicateTolerance) {
+                // Window resizing, subtitle changes, and feature toggles can
+                // redraw the last decoded frame. It is already resident in
+                // FRUC's current input surface, so presenting that surface at
+                // the new destination avoids destroying and recreating the
+                // SDK session for a duplicate PTS.
+                DiscardPendingInterpolationFrame();
+                ID3D11Texture2D* current =
+                    frameInterpolator.CurrentTexture();
+                ID3D11ShaderResourceView* currentView =
+                    frameInterpolator.CurrentView();
+                if (current && currentView) {
+                    return RenderRgbTexture(current, currentView, frame.width,
+                                            frame.height, destinationRect);
+                }
+            }
+            const double maximumGap = (std::max)(0.25, frame.duration * 3.0);
+            if (delta < -duplicateTolerance || delta > maximumGap) {
+                ResetFrameInterpolationState(true);
+            }
+        }
+        if (useFrameInterpolation &&
+            !frameInterpolator.Prepare(static_cast<UINT>(frame.width),
+                                       static_cast<UINT>(frame.height))) {
+            // Missing runtime, unsupported GPU, or a resource error must not
+            // prevent the decoded source frame from being shown normally.
+            rtxFrameInterpolationEnabled = false;
+            ResetFrameInterpolationState(false);
+            useFrameInterpolation = false;
+        } else if (!useFrameInterpolation &&
+                   (std::isfinite(previousInterpolationPts) ||
+                    pendingInterpolationTexture)) {
+            ResetFrameInterpolationState(true);
+        }
         const bool useVsr = ShouldUseVsr(frame.width, frame.height, destinationRect);
-        if (useVsr && !EnsureVsrInputTexture(static_cast<UINT>(frame.width),
-                                             static_cast<UINT>(frame.height))) {
+        if (useVsr && !useFrameInterpolation &&
+            !EnsureVsrInputTexture(static_cast<UINT>(frame.width),
+                                   static_cast<UINT>(frame.height))) {
             return false;
         }
         bool explicitPqToneMapping =
@@ -1388,6 +1633,11 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
         const auto prepareProcessor = [&]() -> bool {
             if (explicitPqToneMapping) {
                 processorOutput = hdrPqTexture.Get();
+                processorOutputWidth = static_cast<UINT>(frame.width);
+                processorOutputHeight = static_cast<UINT>(frame.height);
+                processorDestinationRect = sourceRect;
+            } else if (useFrameInterpolation) {
+                processorOutput = frameInterpolator.InputTexture();
                 processorOutputWidth = static_cast<UINT>(frame.width);
                 processorOutputHeight = static_cast<UINT>(frame.height);
                 processorDestinationRect = sourceRect;
@@ -1519,6 +1769,19 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
             return Fail(L"ID3D11VideoContext::VideoProcessorBlt", hr);
         }
         if (explicitPqToneMapping) {
+            if (useFrameInterpolation) {
+                const RECT toneMapRect = {0, 0, frame.width, frame.height};
+                if (!DrawTextureToTarget(
+                        hdrPqView.Get(),
+                        frameInterpolator.InputRenderTarget(),
+                        static_cast<UINT>(frame.width),
+                        static_cast<UINT>(frame.height), toneMapRect,
+                        hdrToneMapPixelShader.Get())) {
+                    return false;
+                }
+                return ProcessFrameInterpolation(frame, destinationRect,
+                                                 playbackPosition);
+            }
             if (useVsr) {
                 const RECT toneMapRect = {0, 0, frame.width, frame.height};
                 if (!DrawTextureToTarget(hdrPqView.Get(),
@@ -1536,10 +1799,14 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
                 // A transient SDK or resource error must not stop playback.
                 rtxVideoUpscalingEnabled = false;
                 InvalidateVideoProcessor();
-                return RenderHardware(frame);
+                return RenderHardware(frame, playbackPosition);
             }
             return DrawTexture(hdrPqView.Get(), destinationRect,
                                hdrToneMapPixelShader.Get()) && Present();
+        }
+        if (useFrameInterpolation) {
+            return ProcessFrameInterpolation(frame, destinationRect,
+                                             playbackPosition);
         }
         if (useVsr) {
             if (RenderVsrTexture(vsrInputTexture.Get(), frame.width,
@@ -1551,12 +1818,13 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
             // frame through the original video-processor path.
             rtxVideoUpscalingEnabled = false;
             InvalidateVideoProcessor();
-            return RenderHardware(frame);
+            return RenderHardware(frame, playbackPosition);
         }
         return Present();
     }
 
-    bool RenderFrame(const movieplayer::codec::VideoFrame& frame)
+    bool RenderFrame(const movieplayer::codec::VideoFrame& frame,
+                     double playbackPosition)
     {
         if (!device || !context || !swapChain) {
             return Fail(L"D3DRenderer is not initialized");
@@ -1565,7 +1833,7 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
             lastError.clear();
             return true; // The window is minimized.
         }
-        if (RenderHardware(frame)) {
+        if (RenderHardware(frame, playbackPosition)) {
             lastError.clear();
             return true;
         }
@@ -1583,6 +1851,7 @@ float4 main(float4 position : SV_POSITION, float2 texcoord : TEXCOORD0) : SV_TAR
             return;
         }
         const FLOAT black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        ResetFrameInterpolationState(true);
         lastVideoRect = {0, 0, static_cast<LONG>(clientWidth), static_cast<LONG>(clientHeight)};
         context->ClearRenderTargetView(renderTarget.Get(), black);
         if (Present()) {
@@ -1632,10 +1901,25 @@ ID3D11Device* D3DRenderer::Device() const noexcept
     return impl_->device.Get();
 }
 
-bool D3DRenderer::RenderFrame(const movieplayer::codec::VideoFrame& frame)
+bool D3DRenderer::RenderFrame(const movieplayer::codec::VideoFrame& frame,
+                              double playbackPosition)
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->RenderFrame(frame);
+    return impl_->RenderFrame(frame, playbackPosition);
+}
+
+bool D3DRenderer::PresentPendingInterpolatedFrame(double playbackPosition)
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->device || !impl_->context || !impl_->swapChain ||
+        !impl_->clientWidth || !impl_->clientHeight || !impl_->renderTarget) {
+        return true;
+    }
+    if (impl_->PresentPendingInterpolatedFrame(playbackPosition)) {
+        impl_->lastError.clear();
+        return true;
+    }
+    return false;
 }
 
 void D3DRenderer::SetSubtitleText(const std::wstring& text)
@@ -1711,6 +1995,41 @@ std::wstring D3DRenderer::RtxVideoUpscalingStatus() const
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->rtxVideoVsr.Status();
+}
+
+bool D3DRenderer::SetRtxFrameInterpolationEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (enabled && !impl_->frameInterpolator.IsAvailable()) {
+        impl_->rtxFrameInterpolationEnabled = false;
+        return false;
+    }
+    if (impl_->rtxFrameInterpolationEnabled == enabled) {
+        return true;
+    }
+
+    impl_->rtxFrameInterpolationEnabled = enabled;
+    impl_->ResetFrameInterpolationState(true);
+    impl_->InvalidateVideoProcessor();
+    return true;
+}
+
+bool D3DRenderer::IsRtxFrameInterpolationEnabled() const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->rtxFrameInterpolationEnabled;
+}
+
+bool D3DRenderer::IsRtxFrameInterpolationAvailable() const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->frameInterpolator.IsAvailable();
+}
+
+std::wstring D3DRenderer::RtxFrameInterpolationStatus() const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->frameInterpolator.Status();
 }
 
 void D3DRenderer::Clear()

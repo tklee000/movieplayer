@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cwctype>
 #include <iterator>
@@ -110,6 +111,7 @@ struct MenuState {
     bool autoPlayNext = false;
     bool alwaysOnTop = false;
     bool rtxVideoUpscaling = false;
+    bool rtxFrameInterpolation = false;
     bool subtitleOff = false;
     bool whisperBusy = false;
     bool engineOpen = false;
@@ -151,6 +153,7 @@ enum CommandId : int {
     ID_SPEED_150,
     ID_SPEED_200,
     ID_RTX_VIDEO_UPSCALING,
+    ID_RTX_FRAME_INTERPOLATION,
     ID_LANGUAGE_EN,
     ID_LANGUAGE_JA,
     ID_LANGUAGE_KO,
@@ -234,6 +237,7 @@ bool SameMenuState(const MenuState& left, const MenuState& right) {
            left.autoPlayNext == right.autoPlayNext &&
            left.alwaysOnTop == right.alwaysOnTop &&
            left.rtxVideoUpscaling == right.rtxVideoUpscaling &&
+           left.rtxFrameInterpolation == right.rtxFrameInterpolation &&
            left.subtitleOff == right.subtitleOff &&
            left.whisperBusy == right.whisperBusy &&
            left.engineOpen == right.engineOpen &&
@@ -1108,6 +1112,8 @@ private:
         AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
         append(view, MF_STRING, ID_RTX_VIDEO_UPSCALING,
                "menu.view.rtx_video_upscaling");
+        append(view, MF_STRING, ID_RTX_FRAME_INTERPOLATION,
+               "menu.view.rtx_frame_interpolation");
         append(root, MF_POPUP, reinterpret_cast<UINT_PTR>(view), "menu.view");
 
         HMENU subtitle = CreatePopupMenu();
@@ -1161,11 +1167,8 @@ private:
         case WM_SIZE:
             LayoutControls();
             InvalidateRect(hwnd_, nullptr, FALSE);
-            renderer_.Resize();
-            if (lastFrame_ && lastFrame_->texture) {
-                renderer_.RenderFrame(*lastFrame_);
-            } else {
-                renderer_.Clear();
+            if (!fullscreenTransition_) {
+                ResizeRendererAndRedraw();
             }
             return 0;
         case WM_DPICHANGED: {
@@ -2035,6 +2038,22 @@ private:
             }
             break;
         }
+        case ID_RTX_FRAME_INTERPOLATION: {
+            const bool enable = !renderer_.IsRtxFrameInterpolationEnabled();
+            if (!renderer_.SetRtxFrameInterpolationEnabled(enable)) {
+                const std::wstring message = Localization::Format(
+                    "message.rtx_frame_interpolation_unavailable",
+                    {{L"error", renderer_.RtxFrameInterpolationStatus()}});
+                MessageBoxW(
+                    hwnd_, message.c_str(),
+                    Localization::Text(
+                        "title.rtx_frame_interpolation").c_str(),
+                    MB_OK | MB_ICONINFORMATION);
+            } else {
+                RedrawLastFrame();
+            }
+            break;
+        }
         case ID_LOOP:
             loop_ = !loop_;
             break;
@@ -2539,7 +2558,23 @@ private:
 
     void RedrawLastFrame() {
         if (lastFrame_ && lastFrame_->texture) {
-            renderer_.RenderFrame(*lastFrame_);
+            if (!renderer_.RenderFrame(*lastFrame_)) {
+                SetWindowTextW(statusLabel_, renderer_.LastError().c_str());
+            }
+        }
+    }
+
+    void ResizeRendererAndRedraw() {
+        if (!renderer_.Resize()) {
+            SetWindowTextW(statusLabel_, renderer_.LastError().c_str());
+            return;
+        }
+        if (lastFrame_ && lastFrame_->texture) {
+            if (!renderer_.RenderFrame(*lastFrame_)) {
+                SetWindowTextW(statusLabel_, renderer_.LastError().c_str());
+            }
+        } else {
+            renderer_.Clear();
         }
     }
 
@@ -2790,6 +2825,11 @@ private:
     }
 
     void ToggleFullscreen() {
+        // SetWindowPos, SetWindowPlacement, SetMenu, and frame-style changes
+        // can each synchronously emit WM_SIZE. Coalesce those notifications so
+        // the renderer rebuilds the swap-chain-sized resources only once per
+        // completed fullscreen transition.
+        fullscreenTransition_ = true;
         if (!fullscreen_) {
             savedPlacement_.length = sizeof(savedPlacement_);
             GetWindowPlacement(hwnd_, &savedPlacement_);
@@ -2817,14 +2857,10 @@ private:
                          SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
             SetControlVisibility(true);
         }
+        fullscreenTransition_ = false;
         renderer_.SetFullscreenSubtitleScale(fullscreen_);
         LayoutControls();
-        renderer_.Resize();
-        if (lastFrame_ && lastFrame_->texture) {
-            renderer_.RenderFrame(*lastFrame_);
-        } else {
-            renderer_.Clear();
-        }
+        ResizeRendererAndRedraw();
         menuStateValid_ = false;
         UpdateMenuChecks();
     }
@@ -2861,9 +2897,27 @@ private:
             return;
         }
         UpdateSubtitleText(false);
-        if (auto frame = engine_.AcquireVideoFrame()) {
+        const double playbackPosition = engine_.CurrentPosition();
+        if (!renderer_.PresentPendingInterpolatedFrame(playbackPosition)) {
+            SetWindowTextW(statusLabel_, renderer_.LastError().c_str());
+        }
+        double sourceFrameRate = engine_.VideoFrameRate();
+        if (lastFrame_) {
+            sourceFrameRate =
+                std::isfinite(lastFrame_->duration) &&
+                        lastFrame_->duration > 0.0
+                    ? 1.0 / lastFrame_->duration
+                    : 0.0;
+        }
+        const bool interpolateSourceRate =
+            renderer_.IsRtxFrameInterpolationEnabled() &&
+            sourceFrameRate >= 23.0 && sourceFrameRate <= 31.0;
+        const double interpolationLookAhead =
+            interpolateSourceRate ? 0.5 / sourceFrameRate : 0.0;
+        if (auto frame =
+                engine_.AcquireVideoFrame(interpolationLookAhead)) {
             lastFrame_ = std::move(frame);
-            if (!renderer_.RenderFrame(*lastFrame_)) {
+            if (!renderer_.RenderFrame(*lastFrame_, playbackPosition)) {
                 SetWindowTextW(statusLabel_, renderer_.LastError().c_str());
             }
         }
@@ -2963,6 +3017,9 @@ private:
         if (!decoder.empty()) {
             status += L"  ·  " + decoder;
         }
+        if (renderer_.IsRtxFrameInterpolationEnabled()) {
+            status += L"  ·  RTX FRUC 2×";
+        }
         if (renderer_.IsRtxVideoUpscalingEnabled()) {
             status += L"  ·  RTX VSR";
         }
@@ -3004,6 +3061,8 @@ private:
         state.autoPlayNext = autoPlayNext_;
         state.alwaysOnTop = alwaysOnTop_;
         state.rtxVideoUpscaling = renderer_.IsRtxVideoUpscalingEnabled();
+        state.rtxFrameInterpolation =
+            renderer_.IsRtxFrameInterpolationEnabled();
         state.subtitleOff = !subtitleEnabled_;
         state.whisperBusy =
             whisperJob_.IsRunning() || whisperInstallerProcess_ != nullptr;
@@ -3038,6 +3097,10 @@ private:
                       MF_BYCOMMAND | (state.alwaysOnTop ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(menu_, ID_RTX_VIDEO_UPSCALING,
                       MF_BYCOMMAND | (state.rtxVideoUpscaling
+                                          ? MF_CHECKED
+                                          : MF_UNCHECKED));
+        CheckMenuItem(menu_, ID_RTX_FRAME_INTERPOLATION,
+                      MF_BYCOMMAND | (state.rtxFrameInterpolation
                                           ? MF_CHECKED
                                           : MF_UNCHECKED));
         CheckMenuItem(menu_, ID_SUBTITLE_OFF,
@@ -3136,6 +3199,7 @@ private:
 
     bool trackingSeek_ = false;
     bool fullscreen_ = false;
+    bool fullscreenTransition_ = false;
     bool fullscreenControlsVisible_ = false;
     bool alwaysOnTop_ = false;
     bool loop_ = false;

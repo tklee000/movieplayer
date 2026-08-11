@@ -47,6 +47,9 @@ configure_file(
 
 set(RTX_VIDEO_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rtx_video_sdk" CACHE PATH
     "Path to NVIDIA RTX Video SDK 1.1 or newer")
+set(NVIDIA_OPTICAL_FLOW_SDK_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nvidia_optical_flow_sdk" CACHE PATH
+    "Path to the normalized NVIDIA Optical Flow SDK 5.0 FRUC files")
 set(WHISPER_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper_cpp" CACHE PATH
     "Path to the pinned whisper.cpp source tree")
 set(CTRANSLATE2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ctranslate2" CACHE PATH
@@ -267,6 +270,8 @@ add_executable(MoviePlayer WIN32
     src/D3DRenderer.h
     src/RtxVideoVsr.cpp
     src/RtxVideoVsr.h
+    src/NvidiaFrameInterpolator.cpp
+    src/NvidiaFrameInterpolator.h
     src/SubtitleTrack.cpp
     src/SubtitleTrack.h
     src/WhisperSubtitleJob.cpp
@@ -282,6 +287,26 @@ target_include_directories(MoviePlayer PRIVATE
     "${MOVIEPLAYER_GENERATED_DIR}"
 )
 target_include_directories(MoviePlayer SYSTEM PRIVATE "${RTX_VIDEO_SDK_ROOT}/include")
+
+set(NVIDIA_FRUC_HEADER
+    "${NVIDIA_OPTICAL_FLOW_SDK_ROOT}/include/NvOFFRUC.h")
+set(NVIDIA_FRUC_DLL
+    "${NVIDIA_OPTICAL_FLOW_SDK_ROOT}/bin/Windows/x64/NvOFFRUC.dll")
+if(EXISTS "${NVIDIA_FRUC_HEADER}" AND EXISTS "${NVIDIA_FRUC_DLL}")
+    target_include_directories(MoviePlayer SYSTEM PRIVATE
+        "${NVIDIA_OPTICAL_FLOW_SDK_ROOT}/include")
+    target_compile_definitions(MoviePlayer PRIVATE
+        MOVIEPLAYER_HAS_NVIDIA_FRUC=1)
+    set(MOVIEPLAYER_HAS_NVIDIA_FRUC ON)
+    message(STATUS "NVIDIA Optical Flow FRUC support enabled")
+else()
+    target_compile_definitions(MoviePlayer PRIVATE
+        MOVIEPLAYER_HAS_NVIDIA_FRUC=0)
+    set(MOVIEPLAYER_HAS_NVIDIA_FRUC OFF)
+    message(STATUS
+        "NVIDIA Optical Flow FRUC support disabled; run "
+        "scripts/setup_nvidia_optical_flow_sdk.ps1 with the licensed SDK archive")
+endif()
 
 target_link_directories(MoviePlayer PRIVATE
     "${RTX_VIDEO_SDK_ROOT}/lib/Windows/x64"
@@ -340,6 +365,23 @@ add_custom_command(TARGET MoviePlayer POST_BUILD
             "${RTX_VIDEO_SDK_ROOT}/bin/Windows/x64/rel/nvngx_vsr.dll"
             "$<TARGET_FILE_DIR:MoviePlayer>"
     VERBATIM)
+
+if(MOVIEPLAYER_HAS_NVIDIA_FRUC)
+    add_custom_command(TARGET MoviePlayer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${NVIDIA_FRUC_DLL}"
+                "$<TARGET_FILE_DIR:MoviePlayer>"
+        VERBATIM)
+    file(GLOB NVIDIA_FRUC_CUDA_RUNTIMES
+        "${NVIDIA_OPTICAL_FLOW_SDK_ROOT}/bin/Windows/x64/cudart64_*.dll")
+    foreach(cuda_runtime IN LISTS NVIDIA_FRUC_CUDA_RUNTIMES)
+        add_custom_command(TARGET MoviePlayer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${cuda_runtime}"
+                    "$<TARGET_FILE_DIR:MoviePlayer>"
+            VERBATIM)
+    endforeach()
+endif()
 
 add_custom_command(TARGET MoviePlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

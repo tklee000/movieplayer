@@ -1206,8 +1206,12 @@ double PlayerEngine::Duration() const { return impl_->duration; }
 double PlayerEngine::CurrentPosition() const { return impl_->CurrentPosition(); }
 int PlayerEngine::VideoWidth() const { return impl_->width; }
 int PlayerEngine::VideoHeight() const { return impl_->height; }
+double PlayerEngine::VideoFrameRate() const {
+    return impl_->videoTrack.frameRate.ToDouble();
+}
 
-std::shared_ptr<DecodedVideoFrame> PlayerEngine::AcquireVideoFrame() {
+std::shared_ptr<DecodedVideoFrame> PlayerEngine::AcquireVideoFrame(
+    double lookAheadSeconds) {
     if (!impl_->opened.load()) return nullptr;
     const std::uint64_t now = GetTickCount64();
     const std::uint64_t previousTick = impl_->lastAcquireVideoTick.exchange(now);
@@ -1222,16 +1226,21 @@ std::shared_ptr<DecodedVideoFrame> PlayerEngine::AcquireVideoFrame() {
     impl_->acquireCallsSinceLog.fetch_add(1);
     const bool force = impl_->forceNextFrame.exchange(false);
     const double clock = impl_->CurrentPosition();
+    const bool paused = impl_->paused.load();
+    const double lookAhead =
+        !paused && std::isfinite(lookAheadSeconds)
+            ? std::max(0.0, lookAheadSeconds)
+            : 0.0;
     std::size_t skippedFrames = 0;
-    auto frame = impl_->videoFrames.Acquire(clock,
-                                            impl_->paused.load(), force,
+    auto frame = impl_->videoFrames.Acquire(clock + lookAhead,
+                                            paused, force,
                                             skippedFrames);
     if (frame) {
         impl_->acquiredVideoFramesSinceLog.fetch_add(1);
         impl_->displayedPts.store(frame->pts);
         impl_->displayedDecoderPts.store(frame->decoderPts);
         impl_->displayedSynthesizedPts.store(frame->synthesizedPts);
-        if (impl_->paused.load()) impl_->pausedPosition.store(frame->pts);
+        if (paused) impl_->pausedPosition.store(frame->pts);
     }
     if (skippedFrames != 0) {
         impl_->skippedVideoFramesSinceLog.fetch_add(skippedFrames);

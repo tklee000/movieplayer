@@ -4,6 +4,8 @@ Run `MoviePlayer.exe` from this folder. Required VC142 runtime DLLs are supplied
 beside the application, so a system-wide Visual C++ 2019 Redistributable
 installation is not required. Keep the supplied VC142 DLLs, `nvngx_vsr.dll`,
 `languages`, `tools`, `scripts`, and `licenses` beside the executable.
+Builds made with the separately licensed NVIDIA Optical Flow SDK also require
+`NvOFFRUC.dll` and its supplied `cudart64_*.dll` beside the executable.
 
 ## Playback implementation and codec scope
 
@@ -20,6 +22,8 @@ H.264 asks the Windows decoder to use DXVA when available and can use the
 decoder's software path otherwise. HEVC Main10 requires a compatible D3D11
 Main10/P010 hardware decoder and has no software fallback. Optional RTX Video
 VSR automatically falls back to normal D3D11 scaling when unavailable.
+Optional NVIDIA FRUC doubles progressive 23-31 FPS video before VSR;
+if its runtime or supported hardware is absent, source-rate playback continues.
 
 The supported H.264, HEVC, MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4
 v3 paths target ordinary consumer video files commonly
@@ -86,6 +90,14 @@ Use **View > NVIDIA RTX Video AI Upscaling (VSR)**. A compatible NVIDIA RTX GPU
 and driver are required. Unsupported systems automatically use normal D3D11
 scaling. The NVIDIA runtime is proprietary and governed by the license in
 `licenses\NVIDIA-RTX-Video-SDK-License.pdf`.
+
+## NVIDIA 2x frame interpolation
+
+Use **View > NVIDIA 2x Frame Interpolation** with progressive 23-31 FPS
+video. When VSR is also enabled, MoviePlayer runs FRUC before VSR. This feature
+requires an NVIDIA Turing-or-newer GPU, current driver, `NvOFFRUC.dll`, and the
+matching CUDA runtime from Optical Flow SDK 5.0. Those files retain NVIDIA's
+license and must not be redistributed without satisfying its requirements.
 
 ## License notices
 

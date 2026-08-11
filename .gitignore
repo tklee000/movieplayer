@@ -3,6 +3,8 @@
 /.deploy-staging/
 /third_party/rtx_video_sdk/*
 !/third_party/rtx_video_sdk/.gitkeep
+/third_party/nvidia_optical_flow_sdk/*
+!/third_party/nvidia_optical_flow_sdk/.gitkeep
 /third_party/whisper_cpp/*
 !/third_party/whisper_cpp/.gitkeep
 /third_party/ctranslate2/*
@@ -11,7 +13,9 @@
 !/third_party/sentencepiece/.gitkeep
 /third_party/opus/
 /third_party/RTX_Video_SDK_*.zip
+/Optical_Flow_SDK_*.zip
 /.rtx-video-sdk-download/
+/.nvidia-optical-flow-sdk-staging/
 /third_party/whisper/*
 !/third_party/whisper/.gitkeep
 !/third_party/whisper/LICENSES.md

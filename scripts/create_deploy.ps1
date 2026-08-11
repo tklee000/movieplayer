@@ -61,6 +61,21 @@ foreach ($name in $runtimeFiles) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $Staging $name)
 }
 
+$frucRuntime = Join-Path $BuildOutput 'NvOFFRUC.dll'
+if (Test-Path -LiteralPath $frucRuntime -PathType Leaf) {
+    Copy-Item -LiteralPath $frucRuntime `
+        -Destination (Join-Path $Staging 'NvOFFRUC.dll')
+    $cudaRuntimes = @(Get-ChildItem -LiteralPath $BuildOutput -File `
+        -Filter 'cudart64_*.dll')
+    if ($cudaRuntimes.Count -eq 0) {
+        throw 'The FRUC build output is missing its cudart64 runtime.'
+    }
+    foreach ($cudaRuntime in $cudaRuntimes) {
+        Copy-Item -LiteralPath $cudaRuntime.FullName `
+            -Destination (Join-Path $Staging $cudaRuntime.Name)
+    }
+}
+
 $copyMap = @{
     'install_ai_models.cmd' = 'install_ai_models.cmd'
     'install_japanese_translation_model.cmd' = 'install_japanese_translation_model.cmd'
@@ -98,6 +113,18 @@ foreach ($entry in $copyMap.GetEnumerator()) {
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
     Copy-Item -LiteralPath $source -Destination $destination
+}
+
+if (Test-Path -LiteralPath $frucRuntime -PathType Leaf) {
+    $frucLicense = Get-ChildItem -LiteralPath `
+        (Join-Path $Root 'third_party\nvidia_optical_flow_sdk') -File `
+        -Filter 'NVIDIA_Optical_Flow_SDK_License.*' |
+        Select-Object -First 1
+    if (-not $frucLicense) {
+        throw 'The NVIDIA Optical Flow SDK license is required for a FRUC deployment.'
+    }
+    Copy-Item -LiteralPath $frucLicense.FullName -Destination `
+        (Join-Path $Staging ('licenses\' + $frucLicense.Name))
 }
 
 $languageSource = Join-Path $Root 'languages'

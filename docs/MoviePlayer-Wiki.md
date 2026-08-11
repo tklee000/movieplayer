@@ -34,7 +34,7 @@ GPU driver, optional SDK, or AI libraries that it calls.
 | Audio | AAC-LC at 24, 44.1, or 48 kHz; MPEG-TS AAC/ADTS; native FLAC in MKV at 4 through 32 bits and up to eight channels; native AC-3 in MP4/MKV/AVI/MPEG-TS with mono through 5.1 input; external DirectShow E-AC-3/DTS decode; stereo output/downmix; mono/stereo Opus in MKV; MP3 in AVI; XAudio2 output |
 | Seeking | MP4 sync samples, MKV cues, AVI keyframe/index-or-scan samples, and approximate MPEG-TS byte seeking followed by the next keyframe, with decoder and playback-clock reset |
 | Subtitles | External SRT, WebVTT, ASS/SSA, and SMI/SAMI; embedded Matroska UTF-8/ASS/SSA text and DVD VobSub (S_VOBSUB) bitmap subtitles; optional local transcription and translation |
-| Rendering | D3D11 video processing, aspect-ratio-preserving presentation, subtitle composition, HDR color handling, and optional RTX Video VSR |
+| Rendering | D3D11 video processing, optional NVIDIA 2× FRUC followed by RTX Video VSR, aspect-ratio-preserving presentation, subtitle composition, and HDR color handling |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 
 Supported Matroska or MPEG-TS E-AC-3 and DTS tracks use a compatible external
@@ -59,8 +59,10 @@ flowchart LR
     E --> G["NV12 or P010 D3D11 decode surface"]
     F --> H["D3D11 video processor"]
     G --> H
-    H --> I["Optional HDR/VSR processing"]
-    I --> J["DXGI swap chain"]
+    H --> I["Optional HDR tone mapping"]
+    I --> S["Optional NVIDIA FRUC 2×"]
+    S --> T["Optional RTX Video VSR"]
+    T --> J["DXGI swap chain"]
     B --> K{"Audio codec"}
     K -->|"AAC-LC"| L["First-party AAC decoder, mixer, and resampler"]
     K -->|"FLAC"| Q["First-party lossless FLAC decoder"]
@@ -150,7 +152,7 @@ output. Both require a usable unencrypted DXVA VLD configuration. There is no
 software HEVC fallback in the current implementation, so opening the stream
 fails with a diagnostic when any of those requirements is missing.
 
-### Presentation, HDR, and upscaling
+### Presentation, frame interpolation, HDR, and upscaling
 
 The D3D11 video processor converts decoder surfaces to the swap-chain format,
 applies source/destination rectangles, preserves aspect ratio, and handles the
@@ -160,6 +162,12 @@ processing so scaling does not blur the text.
 
 NVIDIA RTX Video VSR is optional. Initialization or per-frame VSR failure does
 not stop playback; MoviePlayer automatically returns to ordinary D3D11 scaling.
+NVIDIA Optical Flow FRUC is also optional and applies only to progressive
+29-31 FPS input. The scheduler acquires the next source frame half a frame
+early, presents FRUC's midpoint, and then presents the original at its PTS.
+When both NVIDIA features are enabled, FRUC always runs before VSR, and VSR
+processes both the interpolated and original frames. A FRUC failure returns to
+source-rate presentation without disabling ordinary playback.
 If a hardware D3D11 device cannot be created, the renderer attempts a WARP
 software device for basic rendering. WARP normally lacks video decode and video
 processor interfaces, so hardware-dependent streams can remain unavailable.
@@ -173,6 +181,7 @@ processor interfaces, so hardware-dependent streams can remain unavailable.
 | MPEG-2/WMV3/Microsoft MPEG-4 v3 decode | Matching Windows transform or DMO | No separate MoviePlayer decoder |
 | HEVC Main/Main10 decode | First-party parsing plus D3D11/DXVA NV12 or P010 decode | No software fallback |
 | Video presentation | Hardware D3D11 video processor | Basic WARP rendering where the required interfaces are available |
+| NVIDIA 2× frame interpolation | Optical Flow SDK 5.0 FRUC on a Turing-or-newer NVIDIA GPU | Source-rate D3D11 presentation |
 | RTX Video VSR | NVIDIA runtime on a compatible RTX GPU and driver | Standard D3D11 scaling |
 | AAC-LC decode | First-party decoder | No alternate decoder |
 | Opus decode | Statically linked libopus 1.5.2 | No alternate decoder |
@@ -229,12 +238,14 @@ Requirements:
 - The CMake bundled with Visual Studio
 - PowerShell 5.1 or later, `curl.exe`, and `git.exe`
 - NVIDIA RTX Video SDK files when VSR is built
+- Separately downloaded NVIDIA Optical Flow SDK 5.0 files when FRUC is built
 - Pinned native AI source dependencies when the subtitle worker is built
 
 ```powershell
 git clone https://github.com/tklee000/movieplayer.git
 cd movieplayer
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_rtx_video_sdk.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_nvidia_optical_flow_sdk.ps1 -ArchivePath C:\path\to\optical_flow_sdk_5.0.7.zip
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_native_ai_dependencies.ps1
 .\build.cmd
 ```
@@ -247,6 +258,7 @@ build-vs2019/Release/
   MoviePlayerSubtitleWorker.exe
   ctranslate2.dll
   nvngx_vsr.dll
+  NvOFFRUC.dll and cudart64_*.dll (when Optical Flow SDK is installed)
   VC142 runtime DLLs
 ```
 

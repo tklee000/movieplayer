@@ -28,7 +28,7 @@ later with `install_ai_models.cmd`.
 | Platform | Native Windows 10/11 x64, Per-monitor V2 DPI, Unicode, and long-path awareness |
 | Playback | Play/pause/stop, frame step, seek, loop, 0.5x-2.0x speed, volume/mute, fullscreen, always-on-top, and conservative next-episode matching |
 | Windows integration | Drag and drop, command-line file open, portable per-user association registration, and MSI system registration for supported extensions |
-| Rendering | Shared-device D3D11 video processing, aspect-ratio-preserving presentation, optional RTX Video VSR, and WARP fallback where supported |
+| Rendering | Shared-device D3D11 video processing, optional NVIDIA 2× FRUC followed by RTX Video VSR, aspect-ratio-preserving presentation, and WARP fallback where supported |
 | Audio clock | XAudio2 audio-master synchronization with an external-clock fallback when audio is absent or fails |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
 | AI subtitles | Optional native whisper.cpp recognition and CTranslate2/SentencePiece translation; model downloads are pinned and verified |
@@ -42,14 +42,14 @@ later with `install_ai_models.cmd`.
 | Windows Media Foundation | H.264, MPEG-4 Part 2, MPEG-2, WMV3, and Microsoft MPEG-4 v3 video decoding, plus MP3 audio decoding |
 | External DirectShow audio decoder | E-AC-3 and DTS decoding through a compatible decoder registered on the system; external codec binaries are not linked or distributed |
 | D3D11, DXVA, DXGI, and XAudio2 | Hardware video decode services, GPU video processing and presentation, software-rendering fallback, and audio output |
-| Optional NVIDIA and native AI components | RTX Video VSR, speech recognition, and translation |
+| Optional NVIDIA and native AI components | Optical Flow FRUC, RTX Video VSR, speech recognition, and translation |
 
 The decoder and renderer share one D3D11 device. H.264 requests DXVA through
 the Windows transform and can fall back to its software path. HEVC Main and
 Main10 use MoviePlayer's bitstream parser and require the GPU's matching D3D11
 Main/NV12 or Main10/P010 decode profile; there is no current software HEVC
-fallback. RTX Video VSR is optional, and any VSR failure returns to standard
-D3D11 scaling without stopping playback.
+fallback. NVIDIA frame interpolation and RTX Video VSR are optional; failures
+return to the preceding D3D11 path without stopping playback.
 
 See [the technical guide](docs/MoviePlayer-Wiki.md) for the full architecture,
 implementation ownership, acceleration requirements, and fallback matrix.
@@ -215,6 +215,33 @@ A compatible 64-bit Windows system, NVIDIA RTX GPU, current driver, and the
 packaged NVIDIA runtime are required; review the NVIDIA terms before building
 or redistributing it.
 
+## NVIDIA 2x frame interpolation
+
+Enable **View > NVIDIA 2x Frame Interpolation** for progressive
+29-31 FPS content. MoviePlayer acquires the next decoded frame half an input
+frame early, asks the NVIDIA Optical Flow SDK FRUC library for the midpoint,
+and presents the midpoint and original at their respective timestamps. When
+VSR is also enabled the fixed processing order is **FRUC first, VSR second**,
+so both the generated midpoint and original frame are AI-upscaled before
+subtitle composition and presentation.
+
+Optical Flow SDK 5.0 is a separately licensed NVIDIA download requiring a
+Developer Program login and explicit license acceptance. MoviePlayer does not
+accept those terms or download it automatically. After downloading the
+official `optical_flow_sdk_5.0.7.zip`, normalize the needed header and runtime:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\setup_nvidia_optical_flow_sdk.ps1 `
+  -ArchivePath C:\path\to\optical_flow_sdk_5.0.7.zip
+```
+
+Without that package, the source still builds and the menu reports why FRUC
+is unavailable. FRUC requires Windows 10 or later, an NVIDIA Turing-or-newer
+GPU with Optical Flow support, and a current NVIDIA driver. Only progressive
+Progressive 23-31 FPS input is doubled (for example, 23.976 to 47.952 FPS or
+29.97 to 59.94 FPS); other frame rates retain their normal timing.
+
 ## Codec layout
 
 ```text
@@ -274,15 +301,18 @@ build Release:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_rtx_video_sdk.ps1
+# After separately downloading and accepting the Optical Flow SDK terms:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_nvidia_optical_flow_sdk.ps1 -ArchivePath C:\path\to\optical_flow_sdk_5.0.7.zip
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_opus.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_native_ai_dependencies.ps1
 .\build.cmd -Configuration Release
 ```
 
-`build.ps1` runs the setup scripts automatically when required files are
-missing, so the explicit setup commands can be skipped after their terms have
-already been reviewed. Downloaded SDKs, upstream source trees, model weights,
-build products, release packages, and test media are ignored by Git.
+`build.ps1` automatically installs the publicly downloadable RTX Video and
+source dependencies when required. It never downloads Optical Flow SDK because
+that download requires an NVIDIA login and explicit license acceptance.
+Downloaded SDKs, upstream source trees, model weights, build products, release
+packages, and test media are ignored by Git.
 
 The build creates `build-vs2019\Release\MoviePlayer.exe` and the native subtitle
 worker, copies `ctranslate2.dll`, NVIDIA VSR, and the app-local VC142 runtime
@@ -361,6 +391,8 @@ are unsigned and can display an unknown-publisher warning.
   depends on recording quality, speakers, language pair, names, and terminology.
 - RTX Video VSR availability depends on compatible NVIDIA hardware, drivers,
   input/output conditions, and the proprietary runtime.
+- NVIDIA 2× interpolation additionally requires progressive 23-31 FPS
+  content and the separately installed Optical Flow SDK 5.0 FRUC runtime.
 - Windows 7/8 and 32-bit Windows are not supported.
 
 ## Third-party and legal notices

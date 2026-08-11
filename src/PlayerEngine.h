@@ -57,8 +57,10 @@ public:
     double CurrentPosition() const;
     int VideoWidth() const;
     int VideoHeight() const;
+    double VideoFrameRate() const;
 
-    std::shared_ptr<DecodedVideoFrame> AcquireVideoFrame();
+    std::shared_ptr<DecodedVideoFrame> AcquireVideoFrame(
+        double lookAheadSeconds = 0.0);
     std::wstring MediaDescription() const;
     std::wstring DecoderDescription() const;
     std::wstring LastError() const;

@@ -33,6 +33,7 @@ respective standards.
 |---|---|---|---|---|
 | libopus | 1.5.2, `ddbe48383984d56acd9e1ab6a090c54ca6b735a6` | Matroska Opus audio decoding | BSD-3-Clause with royalty-free patent grants described by the project | `third_party/opus/COPYING` |
 | NVIDIA RTX Video SDK | 1.1 | RTX Video VSR | Proprietary NVIDIA RTX SDK license | `third_party/rtx_video_sdk/NVIDIA_RTX_Video_SDK_License.pdf` |
+| NVIDIA Optical Flow SDK | 5.0.7 (optional, user-supplied) | NVOFA-assisted 2× frame-rate conversion | Proprietary NVIDIA DesignWorks SDK license | SDK archive and `third_party/nvidia_optical_flow_sdk/NVIDIA_Optical_Flow_SDK_License.*` when installed |
 | whisper.cpp and GGML | 1.9.1, `f049fff95a089aa9969deb009cdd4892b3e74916` | Speech recognition | MIT | `third_party/whisper_cpp/LICENSE` |
 | CTranslate2 | 4.8.1, `0d8bcd362ac75ef860ef161d6f0efad0ae439ff0` | Translation-model inference | MIT | `third_party/ctranslate2/LICENSE` |
 | spdlog | 1.10.0, `76fb40d95455f249bd70824ecfcae7a8f0930fa3` | CTranslate2 logging | MIT | `third_party/ctranslate2/third_party/spdlog/LICENSE` |
@@ -124,7 +125,24 @@ Official information:
 - https://developer.nvidia.com/rtx-video-sdk/getting-started
 - https://developer.nvidia.com/gameworks/nvidia_rtx_sdks_license_12apr2021.pdf
 
-## 5. Microsoft and Windows components
+## 5. NVIDIA Optical Flow SDK
+
+NVIDIA Optical Flow SDK FRUC is excluded from Git and is not downloaded
+automatically because NVIDIA requires a Developer Program login and explicit
+license acceptance. `scripts/setup_nvidia_optical_flow_sdk.ps1` only normalizes
+an archive already obtained by the user. FRUC remains optional at build and
+runtime; MoviePlayer dynamically loads the app-local `NvOFFRUC.dll` and falls
+back to source-rate D3D11 presentation if unavailable. Review NVIDIA's current
+license and distribution requirements before packaging `NvOFFRUC.dll` or its
+CUDA runtime.
+
+Official information:
+
+- https://developer.nvidia.com/opticalflow/download
+- https://docs.nvidia.com/video-technologies/optical-flow-sdk/nvfruc-programming-guide/
+- https://docs.nvidia.com/video-technologies/optical-flow-sdk/license/
+
+## 6. Microsoft and Windows components
 
 MoviePlayer uses Direct3D 10/11, DXGI, D3DCompiler, XAudio2, Common Controls,
 DWM, Media Foundation, and other Windows system APIs. Windows supplies these
@@ -135,14 +153,14 @@ the application under Microsoft's redistribution terms. MoviePlayer's MIT
 License does not change the ownership or terms of Microsoft SDK or runtime
 components.
 
-## 6. Test material
+## 7. Test material
 
 `test-assets/japanese_speech_cc0.ogg` is CC0 1.0 material obtained from
 Wikimedia Commons. Its exact source and SHA-256 are recorded in
 `test-assets/README.md`. `test-assets/korean_subtitle_test.srt` is a
 first-party MoviePlayer test fixture.
 
-## 7. Distribution checklist
+## 8. Distribution checklist
 
 - Ship this `THIRD_PARTY_NOTICES.md` file and the `licenses` directory.
 - Retain all MIT, BSD, Apache, and zlib notices in source and binary packages.
@@ -151,5 +169,7 @@ first-party MoviePlayer test fixture.
 - Run `scripts/verify_release.ps1` to validate executable imports and runtime
   files in the distribution directory.
 - Keep the original NVIDIA SDK license with `nvngx_vsr.dll`.
+- Keep the applicable NVIDIA Optical Flow SDK license with `NvOFFRUC.dll` and
+  its matching CUDA runtime, and satisfy NVIDIA's distribution requirements.
 - Recheck the pinned model card and data terms before redistributing any model.
 - Do not include the `CC-BY-NC-4.0` model in a commercial distribution.
