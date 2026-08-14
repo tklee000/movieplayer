@@ -661,6 +661,17 @@ public:
 
         MSG message = {};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            // A held space bar generates repeated WM_KEYDOWN messages.  Do not
+            // let those repeats immediately undo the pause requested by the
+            // first key press.
+            const bool repeatedSpace =
+                (message.message == WM_KEYDOWN ||
+                 message.message == WM_SYSKEYDOWN) &&
+                message.wParam == VK_SPACE &&
+                (message.lParam & (static_cast<LPARAM>(1) << 30)) != 0;
+            if (repeatedSpace) {
+                continue;
+            }
             if (!TranslateAcceleratorW(hwnd_, acceleratorTable, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -1989,8 +2000,18 @@ private:
         case ID_STOP:
         case ID_CONTROL_STOP:
             if (engine_.IsOpen()) {
-                endedHandled_ = false;
+                // Seeking to zero briefly leaves all worker queues empty.  Mark
+                // end-of-playback handling as already dealt with so the timer
+                // cannot mistake that transient state for EOF and start again.
+                endedHandled_ = true;
+                // Freeze playback and paint the stopped controls before the
+                // potentially slow worker shutdown and seek-to-zero work.
+                engine_.Pause();
+                UpdateControls(true);
+                RedrawWindow(hwnd_, nullptr, nullptr,
+                             RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                 engine_.Stop();
+                UpdateControls(true);
             }
             break;
         case ID_SEEK_BACK:
@@ -2699,6 +2720,10 @@ private:
             engine_.Seek(0.0);
             engine_.Play();
         } else {
+            if (engine_.IsPaused()) {
+                // A deliberate play after Stop re-enables normal EOF handling.
+                endedHandled_ = false;
+            }
             engine_.TogglePause();
         }
     }

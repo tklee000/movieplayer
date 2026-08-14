@@ -181,10 +181,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         skippedFrames = 0;
         if (frames_.empty()) return nullptr;
+        // A paused playback clock must not consume queued frames.  Only an
+        // explicit force request (seek preview or single-frame step) may
+        // advance the displayed frame while paused.
+        if (paused && !force) return nullptr;
         // The PTS marks the beginning of the frame's presentation interval.
         // Never select a future frame: doing so made pictures lead the
         // audible-audio clock by up to 10 ms before the renderer presented it.
-        if (!force && !paused && frames_.front()->pts > clock) return nullptr;
+        if (!force && frames_.front()->pts > clock) return nullptr;
         std::shared_ptr<DecodedVideoFrame> result = frames_.front();
         frames_.pop_front();
         if (!paused) {
