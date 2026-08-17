@@ -298,14 +298,46 @@ if(EXISTS "${NVIDIA_FRUC_HEADER}" AND EXISTS "${NVIDIA_FRUC_DLL}")
     target_compile_definitions(MoviePlayer PRIVATE
         MOVIEPLAYER_HAS_NVIDIA_FRUC=1)
     set(MOVIEPLAYER_HAS_NVIDIA_FRUC ON)
+    set(MOVIEPLAYER_FRUC_CAPABILITY 1)
     message(STATUS "NVIDIA Optical Flow FRUC support enabled")
 else()
     target_compile_definitions(MoviePlayer PRIVATE
         MOVIEPLAYER_HAS_NVIDIA_FRUC=0)
     set(MOVIEPLAYER_HAS_NVIDIA_FRUC OFF)
+    set(MOVIEPLAYER_FRUC_CAPABILITY 0)
     message(STATUS
         "NVIDIA Optical Flow FRUC support disabled; run "
         "scripts/setup_nvidia_optical_flow_sdk.ps1 with the licensed SDK archive")
+endif()
+
+# Record the feature compiled into MoviePlayer.exe. Deployment validation uses
+# this marker instead of trusting optional DLLs that an older build may have
+# left behind in the output directory.
+file(WRITE "${MOVIEPLAYER_GENERATED_DIR}/MoviePlayer.capabilities.ini"
+    "[MoviePlayer]\nNvidiaFrameInterpolation=${MOVIEPLAYER_FRUC_CAPABILITY}\n")
+
+add_executable(MoviePlayerSetup WIN32
+    src/Setup.cpp
+    src/Setup.rc
+)
+target_include_directories(MoviePlayerSetup PRIVATE
+    "${MOVIEPLAYER_GENERATED_DIR}"
+)
+target_compile_definitions(MoviePlayerSetup PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _CRT_SECURE_NO_WARNINGS
+    _WIN32_WINNT=0x0A00
+)
+target_link_libraries(MoviePlayerSetup PRIVATE shell32 comctl32)
+set_target_properties(MoviePlayerSetup PROPERTIES OUTPUT_NAME setup)
+if(MSVC)
+    target_compile_options(MoviePlayerSetup PRIVATE
+        /W4 /permissive- /utf-8 /EHsc /MP)
+    target_link_options(MoviePlayerSetup PRIVATE
+        /SUBSYSTEM:WINDOWS,6.02 /MANIFEST:NO)
 endif()
 
 target_link_directories(MoviePlayer PRIVATE
@@ -330,7 +362,8 @@ if(MSVC)
     set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
     include(InstallRequiredSystemLibraries)
     foreach(msvc_runtime IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
-        foreach(runtime_target IN ITEMS MoviePlayer MoviePlayerSubtitleWorker)
+        foreach(runtime_target IN ITEMS
+                MoviePlayer MoviePlayerSubtitleWorker MoviePlayerSetup)
             add_custom_command(TARGET ${runtime_target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "${msvc_runtime}" "$<TARGET_FILE_DIR:${runtime_target}>"
@@ -361,6 +394,9 @@ target_link_libraries(MoviePlayer PRIVATE
 )
 
 add_custom_command(TARGET MoviePlayer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MOVIEPLAYER_GENERATED_DIR}/MoviePlayer.capabilities.ini"
+            "$<TARGET_FILE_DIR:MoviePlayer>/MoviePlayer.capabilities.ini"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${RTX_VIDEO_SDK_ROOT}/bin/Windows/x64/rel/nvngx_vsr.dll"
             "$<TARGET_FILE_DIR:MoviePlayer>"

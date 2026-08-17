@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$AllowMissingFrameInterpolation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,31 @@ function Assert-WorkspaceChild {
         throw "Refusing to modify a path outside the project: $full"
     }
     return $full
+}
+
+function Test-FrameInterpolationSdk {
+    $sdk = Join-Path $Root 'third_party\nvidia_optical_flow_sdk'
+    return (Test-Path -LiteralPath (Join-Path $sdk 'include\NvOFFRUC.h') -PathType Leaf) -and
+           (Test-Path -LiteralPath (Join-Path $sdk 'bin\Windows\x64\NvOFFRUC.dll') -PathType Leaf) -and
+           (@(Get-ChildItem -LiteralPath (Join-Path $sdk 'bin\Windows\x64') -File `
+               -Filter 'cudart64_*.dll' -ErrorAction SilentlyContinue).Count -gt 0)
+}
+
+if (-not $AllowMissingFrameInterpolation -and -not (Test-FrameInterpolationSdk)) {
+    $archives = @(Get-ChildItem -LiteralPath $Root -File `
+        -Filter 'Optical_Flow_SDK_*.zip')
+    if ($archives.Count -eq 1) {
+        Write-Host 'Preparing the locally supplied NVIDIA Optical Flow SDK...'
+        & (Join-Path $Root 'scripts\setup_nvidia_optical_flow_sdk.ps1') `
+            -ArchivePath $archives[0].FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "NVIDIA Optical Flow SDK setup failed with exit code $LASTEXITCODE."
+        }
+    } elseif ($archives.Count -eq 0) {
+        throw 'A portable release requires the licensed NVIDIA Optical Flow SDK. Supply Optical_Flow_SDK_*.zip or use -AllowMissingFrameInterpolation explicitly.'
+    } else {
+        throw 'More than one Optical_Flow_SDK_*.zip archive was found. Keep only the intended SDK archive.'
+    }
 }
 
 if (-not $SkipBuild) {
@@ -41,7 +67,9 @@ New-Item -ItemType Directory -Path $Staging | Out-Null
 
 $runtimeFiles = @(
     'MoviePlayer.exe',
+    'setup.exe',
     'MoviePlayerSubtitleWorker.exe',
+    'MoviePlayer.capabilities.ini',
     'ctranslate2.dll',
     'nvngx_vsr.dll',
     'concrt140.dll',
@@ -61,8 +89,18 @@ foreach ($name in $runtimeFiles) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $Staging $name)
 }
 
+$capabilityFile = Join-Path $BuildOutput 'MoviePlayer.capabilities.ini'
+$frameInterpolationEnabled =
+    (Get-Content -LiteralPath $capabilityFile) -contains 'NvidiaFrameInterpolation=1'
+if (-not $AllowMissingFrameInterpolation -and -not $frameInterpolationEnabled) {
+    throw 'MoviePlayer.exe was built without NVIDIA 2x frame interpolation. Rebuild after installing the Optical Flow SDK.'
+}
+
 $frucRuntime = Join-Path $BuildOutput 'NvOFFRUC.dll'
-if (Test-Path -LiteralPath $frucRuntime -PathType Leaf) {
+if ($frameInterpolationEnabled) {
+    if (-not (Test-Path -LiteralPath $frucRuntime -PathType Leaf)) {
+        throw 'The FRUC-enabled build output is missing NvOFFRUC.dll.'
+    }
     Copy-Item -LiteralPath $frucRuntime `
         -Destination (Join-Path $Staging 'NvOFFRUC.dll')
     $cudaRuntimes = @(Get-ChildItem -LiteralPath $BuildOutput -File `
@@ -79,11 +117,13 @@ if (Test-Path -LiteralPath $frucRuntime -PathType Leaf) {
 $copyMap = @{
     'install_ai_models.cmd' = 'install_ai_models.cmd'
     'install_japanese_translation_model.cmd' = 'install_japanese_translation_model.cmd'
+    'verify_portable.cmd' = 'verify_portable.cmd'
     'README_DEPLOY.md' = 'README.md'
     'LICENSE' = 'licenses\MoviePlayer-LICENSE.txt'
     'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     'scripts\setup_whisper.ps1' = 'scripts\setup_whisper.ps1'
     'scripts\setup_japanese_translation_model.ps1' = 'scripts\setup_japanese_translation_model.ps1'
+    'scripts\verify_deploy.ps1' = 'scripts\verify_deploy.ps1'
     'tools\whisper\README.md' = 'tools\whisper\README.md'
     'third_party\rtx_video_sdk\NVIDIA_RTX_Video_SDK_License.pdf' = 'licenses\NVIDIA-RTX-Video-SDK-License.pdf'
     'third_party\whisper\LICENSES.md' = 'licenses\AI-RUNTIME-AND-MODELS.md'
@@ -115,7 +155,7 @@ foreach ($entry in $copyMap.GetEnumerator()) {
     Copy-Item -LiteralPath $source -Destination $destination
 }
 
-if (Test-Path -LiteralPath $frucRuntime -PathType Leaf) {
+if ($frameInterpolationEnabled) {
     $frucLicense = Get-ChildItem -LiteralPath `
         (Join-Path $Root 'third_party\nvidia_optical_flow_sdk') -File `
         -Filter 'NVIDIA_Optical_Flow_SDK_License.*' |
@@ -133,12 +173,13 @@ if (-not (Test-Path -LiteralPath $languageSource -PathType Container)) {
 }
 Copy-Item -LiteralPath $languageSource -Destination (Join-Path $Staging 'languages') -Recurse
 
-$existingAiModels = Join-Path $Deploy 'third_party\whisper\models'
-if (Test-Path -LiteralPath $existingAiModels) {
-    $preservedDestination = Join-Path $Staging 'third_party\whisper\models'
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $preservedDestination) | Out-Null
-    Move-Item -LiteralPath $existingAiModels -Destination $preservedDestination
+$verifyArguments = @{
+    DeployDirectory = $Staging
 }
+if ($AllowMissingFrameInterpolation) {
+    $verifyArguments.AllowMissingFrameInterpolation = $true
+}
+& (Join-Path $Root 'scripts\verify_deploy.ps1') @verifyArguments
 
 $Deploy = Assert-WorkspaceChild $Deploy
 if (Test-Path -LiteralPath $Deploy) {

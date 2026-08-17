@@ -87,6 +87,58 @@ function Test-InstalledModel {
     return $true
 }
 
+function Invoke-ModelDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source -L --fail --retry 3 --retry-delay 2 `
+            --output $Destination $Url
+        if ($LASTEXITCODE -ne 0) {
+            throw "Download failed: $Url"
+        }
+        return
+    }
+
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor `
+        [Net.SecurityProtocolType]::Tls12
+    for ($attempt = 1; $attempt -le 3; ++$attempt) {
+        try {
+            $request = [Net.HttpWebRequest]::Create($Url)
+            $request.AllowAutoRedirect = $true
+            $request.Timeout = 120000
+            $request.ReadWriteTimeout = 120000
+            $request.UserAgent = 'MoviePlayer model installer'
+            $response = $request.GetResponse()
+            $input = $response.GetResponseStream()
+            $output = [IO.File]::Open(
+                $Destination, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+                $buffer = New-Object byte[] (1024 * 1024)
+                while (($count = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $output.Write($buffer, 0, $count)
+                }
+            } finally {
+                $output.Dispose()
+                $input.Dispose()
+                $response.Dispose()
+            }
+            return
+        } catch {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            if ($attempt -eq 3) {
+                throw "Download failed after three attempts: $Url. $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
 $Staging = Assert-WorkspaceChild $Staging
 $Destination = Assert-WorkspaceChild $Destination
 
@@ -105,10 +157,7 @@ try {
     $archive = Join-Path $Staging ($PackageName + '.zip')
     Write-Host "Downloading pinned Japanese-to-Korean model package..."
     Write-Host "Source: $ModelRepository revision $ModelRevision"
-    & curl.exe -L --fail --retry 3 --retry-delay 2 --output $archive $PackageUrl
-    if ($LASTEXITCODE -ne 0) {
-        throw "Download failed: $PackageUrl"
-    }
+    Invoke-ModelDownload -Url $PackageUrl -Destination $archive
 
     if (-not (Test-VerifiedFile -Path $archive -Size $PackageSize -Sha256 $PackageSha256)) {
         $actualSize = (Get-Item -LiteralPath $archive).Length

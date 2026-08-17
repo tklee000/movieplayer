@@ -207,8 +207,8 @@ flowchart LR
 The current worker input path requires an MP4 file with a supported 48 kHz AAC
 track. It stores the source transcript beside the video, translates only when
 needed, writes output through a temporary `.part` file, and atomically replaces
-the final SRT. Model weights are not embedded in the binary packages; the MSI
-downloads the standard verified models during installation.
+the final SRT. Model weights are not embedded in the ZIP; portable `setup.exe`
+downloads and verifies the standard models after extraction.
 
 Install the pinned models with:
 
@@ -217,8 +217,10 @@ Install the pinned models with:
 ```
 
 The default setup uses `ggml-large-v3-turbo.bin` for recognition and an int8
-M2M100 418M model for translation. A separately licensed Japanese-to-Korean
-CTranslate2 model can be installed with:
+M2M100 418M model for translation. `setup.exe` offers the separately licensed
+Japanese-to-Korean CTranslate2 model as an off-by-default option, shows its
+CC BY-NC 4.0 notice, and requires explicit **Accept** consent. The same model
+can also be installed directly with:
 
 ```powershell
 .\install_japanese_translation_model.cmd
@@ -236,7 +238,7 @@ Requirements:
 - Visual Studio 2019 16.11 with **Desktop development with C++** and the v142
   x64 toolset
 - The CMake bundled with Visual Studio
-- PowerShell 5.1 or later, `curl.exe`, and `git.exe`
+- PowerShell 5.1 or later and `git.exe` (`curl.exe` is used when available)
 - NVIDIA RTX Video SDK files when VSR is built
 - Separately downloaded NVIDIA Optical Flow SDK 5.0 files when FRUC is built
 - Pinned native AI source dependencies when the subtitle worker is built
@@ -255,7 +257,9 @@ Important Release outputs include:
 ```text
 build-vs2019/Release/
   MoviePlayer.exe
+  setup.exe
   MoviePlayerSubtitleWorker.exe
+  MoviePlayer.capabilities.ini
   ctranslate2.dll
   nvngx_vsr.dll
   NvOFFRUC.dll and cudart64_*.dll (when Optical Flow SDK is installed)
@@ -280,18 +284,18 @@ Create the distributable folder with:
 .\create_deploy.cmd
 ```
 
-Create the x64 MSI package with:
+Create the portable release ZIP and checksum with:
 
 ```powershell
-.\create_msi.cmd
+.\create_release.cmd
 ```
 
-The MSI downloads and verifies the standard Whisper and M2M100 models during
-installation. It intentionally excludes the optional Japanese-to-Korean model
-and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` with Windows
-as MoviePlayer-supported file types. Windows retains control of the user's
-default-app choice. The per-machine MSI requests administrator approval and is
-currently unsigned, so Windows can display an unknown-publisher warning.
+The ZIP contains no model weights. After extraction, `setup.exe` registers
+`.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` for the current user,
+downloads the standard Whisper and M2M100 models, optionally installs the
+Japanese-to-Korean model only after license acceptance, and opens Windows
+Default Apps. Windows retains control of the user's final default-app choice.
+Run `verify_portable.cmd` after copying the extracted folder to another PC.
 
 ## Privacy, licenses, and temporary data
 

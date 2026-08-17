@@ -43,12 +43,21 @@ if ($workerVersion.FileVersion -ne $ExpectedFileVersion -or
     $workerVersion.ProductVersion -ne $ExpectedFileVersion) {
     throw "Unexpected worker version. Expected $ExpectedFileVersion, got file=$($workerVersion.FileVersion), product=$($workerVersion.ProductVersion)"
 }
+$Setup = Join-Path (Split-Path -Parent $Executable) 'setup.exe'
+if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) {
+    throw "Portable setup executable was not found: $Setup"
+}
+$setupVersion = (Get-Item -LiteralPath $Setup).VersionInfo
+if ($setupVersion.FileVersion -ne $ExpectedFileVersion -or
+    $setupVersion.ProductVersion -ne $ExpectedFileVersion) {
+    throw "Unexpected setup version. Expected $ExpectedFileVersion, got file=$($setupVersion.FileVersion), product=$($setupVersion.ProductVersion)"
+}
 $CTranslate2 = Join-Path (Split-Path -Parent $Executable) 'ctranslate2.dll'
 if (-not (Test-Path -LiteralPath $CTranslate2 -PathType Leaf)) {
     throw "Native CTranslate2 runtime was not found: $CTranslate2"
 }
 
-foreach ($binary in @($Executable, $Worker, $CTranslate2)) {
+foreach ($binary in @($Executable, $Worker, $Setup, $CTranslate2)) {
     $dependencies = (& $Dumpbin /dependents $binary | Out-String)
     if ($dependencies -match '(?im)^\s*(?:avcodec|avdevice|avfilter|avformat|avutil|postproc|swresample|swscale)(?:-\d+)?\.dll\s*$') {
         throw "An unsupported media runtime dependency was found in this release: $binary"
@@ -85,4 +94,4 @@ if ($forbiddenRuntime) {
     throw "An unsupported media runtime file was found in this release: $($forbiddenRuntime.FullName)"
 }
 
-Write-Host "Verified MoviePlayer $ExpectedFileVersion ($Configuration): version resources, language catalogs, native AI worker, CTranslate2, app-local MSVC runtime, and media runtime dependencies"
+Write-Host "Verified MoviePlayer $ExpectedFileVersion ($Configuration): player/setup version resources, language catalogs, native AI worker, CTranslate2, app-local MSVC runtime, and media runtime dependencies"

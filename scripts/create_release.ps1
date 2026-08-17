@@ -31,6 +31,12 @@ if (-not (Test-Path -LiteralPath $DeployExecutable -PathType Leaf)) {
 }
 & (Join-Path $Root 'scripts\verify_release.ps1') `
     -Executable $DeployExecutable -Configuration Release
+& (Join-Path $Root 'scripts\verify_deploy.ps1') -DeployDirectory $Deploy
+
+$packagedModels = Join-Path $Deploy 'third_party\whisper\models'
+if (Test-Path -LiteralPath $packagedModels) {
+    throw 'AI model weights must not be embedded in the portable ZIP. Re-run create_deploy.cmd; setup.exe downloads the standard models after extraction.'
+}
 
 New-Item -ItemType Directory -Force -Path $Artifacts | Out-Null
 $Archive = Join-Path $Artifacts "MoviePlayer-v$Version-win64.zip"

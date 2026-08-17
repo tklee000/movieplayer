@@ -1,11 +1,20 @@
 # MoviePlayer 0.6 binary package
 
-Run `MoviePlayer.exe` from this folder. Required VC142 runtime DLLs are supplied
-beside the application, so a system-wide Visual C++ 2019 Redistributable
-installation is not required. Keep the supplied VC142 DLLs, `nvngx_vsr.dll`,
-`languages`, `tools`, `scripts`, and `licenses` beside the executable.
-Builds made with the separately licensed NVIDIA Optical Flow SDK also require
-`NvOFFRUC.dll` and its supplied `cudart64_*.dll` beside the executable.
+Keep this folder together when moving it to another Windows 10/11 x64 PC. Run
+`setup.exe` once for the easiest first-time setup, or run `MoviePlayer.exe`
+directly. Required VC142 runtime DLLs are supplied beside the application, so a
+system-wide Visual C++ 2019 Redistributable installation is not required. Keep
+the supplied VC142 DLLs, `nvngx_vsr.dll`, `NvOFFRUC.dll`, `cudart64_*.dll`,
+`languages`, `tools`, `scripts`, and `licenses` beside the executable. Run
+`verify_portable.cmd` after copying to validate the runtime layout.
+
+`setup.exe` does not copy the application into Program Files and does not need
+administrator privileges. It registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`,
+and `.mts` for the current user, installs the standard AI models described
+below, and opens Windows Default Apps so the user can confirm the desired
+associations. It then offers the Japanese-to-Korean model as an off-by-default
+option and installs it only after showing its third-party terms and receiving
+explicit **Accept** consent.
 
 ## Playback implementation and codec scope
 
@@ -47,7 +56,8 @@ their own DirectShow codec installation.
 The native AI worker and runtime libraries are included, but the large model
 weights are not embedded in the portable package. MoviePlayer provides
 one **Generate AI Subtitles...** command that automatically detects the speech
-language and selects translation. Select it or run:
+language and selects translation. Select it, run `setup.exe`, or run the
+model-only command directly:
 
 ```text
 install_ai_models.cmd
@@ -66,10 +76,10 @@ separately and is selected automatically only for Japanese speech with Korean
 output; missing, incomplete, or failed optional installations fall back to
 M2M100.
 
-The MSI package intentionally excludes the optional Japanese-to-Korean model
-and its installer. The standard Whisper and M2M100 models are downloaded and
-verified automatically during MSI installation. The portable ZIP and source
-tree retain the separate optional installer described below.
+Portable `setup.exe` does not select the optional Japanese-to-Korean model by
+default. Both command files remain in the package, so the standard models can
+be repaired with `install_ai_models.cmd` and the separately licensed Japanese
+model can still be installed explicitly as described below.
 
 To consider that optional model, first read
 `licenses\AI-RUNTIME-AND-MODELS.md`, then run:

@@ -20,8 +20,6 @@
 !/third_party/whisper/.gitkeep
 !/third_party/whisper/LICENSES.md
 /artifacts/
-/.installer-tools/
-/.msi-staging/
 /.native-ai-dependency-staging/
 /tmp/
 /test-assets/*

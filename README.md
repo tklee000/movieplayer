@@ -14,12 +14,16 @@ playback, channel mixer, subtitle parsers, and subtitle-audio resampler.
 
 - [Open the latest GitHub Release](https://github.com/tklee000/movieplayer/releases/latest)
 
-GitHub Releases currently publish the portable ZIP and `SHA256SUMS.txt`; MSI
-installers are intentionally omitted. Extract the ZIP and run
-`MoviePlayer.exe`. The required VC142 runtime DLLs are deployed beside the
-application, so a system-wide Visual C++ 2019 Redistributable installation is
-not required. AI model weights are not embedded in the ZIP and can be installed
-later with `install_ai_models.cmd`.
+GitHub Releases publish the portable ZIP and `SHA256SUMS.txt`. Extract the
+complete ZIP and run `setup.exe` once for the most convenient first-time setup:
+it registers the supported video extensions for the current user, downloads
+and verifies the standard Whisper and M2M100 AI models, and opens Windows
+Default Apps so the user can confirm the associations. The separately licensed
+Japanese-to-Korean model is off by default and is offered only after a license
+notice with explicit **Accept** consent. `MoviePlayer.exe` can also be run
+directly without setup. Required VC142 runtime DLLs are placed
+beside the application, so a system-wide Visual C++ Redistributable install is
+not required.
 
 ## Highlights
 
@@ -27,7 +31,7 @@ later with `install_ai_models.cmd`.
 |---|---|
 | Platform | Native Windows 10/11 x64, Per-monitor V2 DPI, Unicode, and long-path awareness |
 | Playback | Play/pause/stop, frame step, seek, loop, 0.5x-2.0x speed, volume/mute, fullscreen, always-on-top, and conservative next-episode matching |
-| Windows integration | Drag and drop, command-line file open, portable per-user association registration, and MSI system registration for supported extensions |
+| Windows integration | Drag and drop, command-line file open, and setup.exe/in-app per-user association registration for supported extensions |
 | Rendering | Shared-device D3D11 video processing, optional NVIDIA 2× FRUC followed by RTX Video VSR, aspect-ratio-preserving presentation, and WARP fallback where supported |
 | Audio clock | XAudio2 audio-master synchronization with an external-clock fallback when audio is absent or fails |
 | UI languages | English, Japanese, Korean, French, German, Simplified Chinese, Traditional Chinese, Spanish, Portuguese, Hindi, Indonesian, and Arabic |
@@ -124,9 +128,9 @@ listed above.
   subtitle explicitly, or ask MoviePlayer to find a matching subtitle beside
   the video.
 - Register `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`, and `.mts` for the current
-  user from MoviePlayer and then choose defaults in Windows Settings. The MSI
-  advertises the same formats system-wide; Windows retains control of the
-  user's default-app selection.
+  user with `setup.exe` or from MoviePlayer, then choose defaults in Windows
+  Settings. Windows retains control of the user's default-app selection, so a
+  portable helper must not silently replace an existing default player.
 
 ## Twelve UI languages
 
@@ -155,6 +159,8 @@ The Subtitle menu exposes **Generate AI Subtitles...**. Speech-language
 detection is automatic, and the current UI language is used as the requested
 subtitle language. The compiled worker and native runtime libraries ship with
 MoviePlayer; only the large model weights are downloaded separately.
+`setup.exe` installs the standard models automatically during first-time setup.
+The command file remains available for model-only installation or repair:
 
 ```powershell
 .\install_ai_models.cmd
@@ -188,9 +194,10 @@ required sizes, and SHA-256 hashes:
 | `ggerganov/whisper.cpp` `ggml-large-v3-turbo.bin` | `5359861c739e955e79d9a303bcbc70fb988958b1` | Multilingual speech recognition |
 | `gn64/M2M100_418M_CTranslate2` | `18e406c615ef2991fa74d53734bf66b0a6b10cb4` | Offline multilingual translation |
 
-The optional `Hunhee/argos-ko-ja` Japanese-to-Korean native model is installed
-separately after explicit acceptance of its publisher-declared CC BY-NC 4.0
-terms:
+The optional `Hunhee/argos-ko-ja` Japanese-to-Korean native model is offered by
+`setup.exe` with an off-by-default choice and a separate **Accept** license
+dialog. It can also be installed directly after explicit acceptance of its
+publisher-declared CC BY-NC 4.0 terms:
 
 ```powershell
 .\install_japanese_translation_model.cmd
@@ -335,20 +342,14 @@ Create the portable ZIP for GitHub Releases with:
 .\create_release.cmd
 ```
 
-An x64 MSI can still be built locally when needed, but it is not published to
-GitHub Releases:
-
-```powershell
-.\create_msi.cmd
-```
-
-The MSI build downloads a pinned, SHA-256-verified WiX toolset into the ignored
-local tool cache. The resulting installer downloads and verifies the standard
-Whisper and M2M100 models during installation, excludes the separately licensed
-Japanese-to-Korean model, and registers `.mp4`, `.mkv`, `.avi`, `.ts`, `.m2ts`,
-and `.mts` as supported MoviePlayer file types. The MSI is a per-machine
-installer, so Windows requests administrator approval. Locally built MSI files
-are unsigned and can display an unknown-publisher warning.
+The release command rebuilds a fresh model-free deployment, requires the
+licensed NVIDIA Optical Flow FRUC runtime, validates RTX VSR, 2x frame
+interpolation, setup.exe, language catalogs, and app-local VC142 libraries, and
+then writes the ZIP plus its SHA-256 checksum. After copying an extracted
+folder, run `verify_portable.cmd` to recheck its layout. A developer-only build
+without FRUC can be created explicitly with
+`scripts\create_deploy.ps1 -AllowMissingFrameInterpolation`; it is not accepted
+by the standard release command.
 
 ## Source layout
 
@@ -357,9 +358,8 @@ are unsigned and can display an unknown-publisher warning.
 | `src/` | Win32 UI, player engine, renderer, RTX VSR, localization, subtitles, and application resources |
 | `src/codec/` | First-party demuxers, codec interfaces, audio decoders, HEVC/DXVA code, and subtitle decoders |
 | `languages/` | Twelve external UTF-8 UI catalogs |
-| `scripts/` | Verified dependency setup, validation, deployment, release, and MSI packaging |
+| `scripts/` | Verified dependency setup, portable validation, deployment, and release packaging |
 | `tools/whisper/` | Native AI worker protocol and model-layout documentation |
-| `installer/` | WiX source and installer license UI |
 | `third_party/` | Tracked placeholders; downloaded SDKs, libraries, sources, and models are ignored |
 | `tests/` and `test-assets/` | Codec smoke test and test-media guidance |
 | `docs/` | Technical guide and public screenshot |

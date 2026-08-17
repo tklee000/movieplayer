@@ -7,6 +7,7 @@ $Root = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Pat
 $WhisperRoot = Join-Path $Root 'third_party\whisper'
 $ModelsRoot = Join-Path $WhisperRoot 'models'
 $M2MRoot = Join-Path $ModelsRoot 'translation-m2m100'
+$ProgressPreference = 'SilentlyContinue'
 
 $WhisperRevision = '5359861c739e955e79d9a303bcbc70fb988958b1'
 $M2MRevision = '18e406c615ef2991fa74d53734bf66b0a6b10cb4'
@@ -74,10 +75,53 @@ function Install-VerifiedModel {
     $temporary = $Model.Path + '.download'
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     Write-Host "Downloading $($Model.Name)..."
-    & curl.exe -L --fail --retry 3 --retry-delay 2 --output $temporary $Model.Url
-    if ($LASTEXITCODE -ne 0) {
-        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-        throw "Download failed: $($Model.Url)"
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source -L --fail --retry 3 --retry-delay 2 `
+            --output $temporary $Model.Url
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+            throw "Download failed: $($Model.Url)"
+        }
+    } else {
+        # Early Windows 10 releases do not include curl.exe. Stream through the
+        # .NET Framework API so setup.exe still works without loading a
+        # multi-gigabyte model file into memory.
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.ServicePointManager]::SecurityProtocol -bor `
+            [Net.SecurityProtocolType]::Tls12
+        $downloaded = $false
+        for ($attempt = 1; $attempt -le 3 -and -not $downloaded; ++$attempt) {
+            try {
+                $request = [Net.HttpWebRequest]::Create($Model.Url)
+                $request.AllowAutoRedirect = $true
+                $request.Timeout = 120000
+                $request.ReadWriteTimeout = 120000
+                $request.UserAgent = 'MoviePlayer model installer'
+                $response = $request.GetResponse()
+                $input = $response.GetResponseStream()
+                $output = [IO.File]::Open(
+                    $temporary, [IO.FileMode]::Create,
+                    [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $buffer = New-Object byte[] (1024 * 1024)
+                    while (($count = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $output.Write($buffer, 0, $count)
+                    }
+                } finally {
+                    $output.Dispose()
+                    $input.Dispose()
+                    $response.Dispose()
+                }
+                $downloaded = $true
+            } catch {
+                Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+                if ($attempt -eq 3) {
+                    throw "Download failed after three attempts: $($Model.Url). $($_.Exception.Message)"
+                }
+                Start-Sleep -Seconds 2
+            }
+        }
     }
     $item = Get-Item -LiteralPath $temporary
     if ($item.Length -ne $Model.Size) {
